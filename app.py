@@ -217,53 +217,166 @@ def parse_asc_file(file_content: str, skip_rows: int) -> Tuple[np.ndarray, np.nd
 # VISUALIZATION FUNCTIONS
 # ==============================================================
 def create_spectrum_plot(wl: np.ndarray, counts: np.ndarray, 
-                        fit_result: FitResult, filename: str) -> go.Figure:
-    """Create interactive spectrum plot with fit overlay"""
-    fig = go.Figure()
+                        fit_result: FitResult, filename: str, 
+                        show_components: bool = True) -> go.Figure:
+    """Create comprehensive spectrum plot with Lorentzian fit and components"""
     
+    # Create subplots: main plot + residuals
+    from plotly.subplots import make_subplots
+    
+    fig = make_subplots(
+        rows=2, cols=1,
+        row_heights=[0.7, 0.3],
+        vertical_spacing=0.05,
+        subplot_titles=("Spectrum & Lorentzian Fit", "Fit Residuals"),
+        shared_xaxes=True
+    )
+    
+    # ========== Main Plot ==========
     # Raw data
     fig.add_trace(go.Scatter(
         x=wl, y=counts,
-        mode='lines',
-        name='Experimental',
-        line=dict(color='#2E86AB', width=2.5),
+        mode='markers',
+        name='Experimental Data',
+        marker=dict(size=4, color='#2E86AB', opacity=0.6),
         hovertemplate='λ: %{x:.2f} nm<br>I: %{y:.0f}<extra></extra>'
-    ))
+    ), row=1, col=1)
     
     # Lorentzian fit
     if not np.isnan(fit_result.fwhm):
+        # Main fit line
         fig.add_trace(go.Scatter(
             x=wl, y=fit_result.fit_y,
             mode='lines',
             name='Lorentzian Fit',
-            line=dict(color='#A23B72', width=2, dash='dash'),
+            line=dict(color='#A23B72', width=3),
             hovertemplate='Fit: %{y:.0f}<extra></extra>'
-        ))
+        ), row=1, col=1)
         
-        # Mark peak position
-        fig.add_vline(
-            x=fit_result.peak_wavelength,
-            line_dash="dot",
-            line_color="red",
-            annotation_text=f"λ₀ = {fit_result.peak_wavelength:.2f} nm",
-            annotation_position="top"
-        )
+        # Extract fit parameters
+        A = fit_result.fit_params.get('Amplitude', 0)
+        x0 = fit_result.fit_params.get('Center', 0)
+        gamma = fit_result.fit_params.get('Gamma', 0)
+        y0 = fit_result.fit_params.get('Baseline', 0)
+        
+        # Show components if requested
+        if show_components:
+            # Baseline
+            fig.add_trace(go.Scatter(
+                x=wl,
+                y=np.full_like(wl, y0),
+                mode='lines',
+                name='Baseline',
+                line=dict(color='gray', width=2, dash='dot'),
+                hovertemplate='Baseline: %{y:.0f}<extra></extra>'
+            ), row=1, col=1)
+            
+            # Pure Lorentzian (without baseline)
+            pure_lorentzian = lorentzian(wl, A, x0, gamma, 0)
+            fig.add_trace(go.Scatter(
+                x=wl,
+                y=pure_lorentzian + y0,
+                mode='lines',
+                name='Pure Lorentzian',
+                line=dict(color='orange', width=2, dash='dashdot'),
+                opacity=0.7,
+                hovertemplate='Pure Lorentzian: %{y:.0f}<extra></extra>'
+            ), row=1, col=1)
+        
+        # Peak position marker
+        fig.add_trace(go.Scatter(
+            x=[x0],
+            y=[fit_result.peak_intensity],
+            mode='markers',
+            name='Peak Center',
+            marker=dict(size=15, color='red', symbol='star', line=dict(color='white', width=2)),
+            hovertemplate=f'Peak: λ₀={x0:.2f} nm<br>I={fit_result.peak_intensity:.0f}<extra></extra>'
+        ), row=1, col=1)
         
         # FWHM markers
-        gamma = fit_result.fwhm / 2
-        x0 = fit_result.peak_wavelength
-        half_max = fit_result.peak_intensity / 2
+        half_max = (fit_result.peak_intensity + y0) / 2
+        fwhm_left = x0 - gamma
+        fwhm_right = x0 + gamma
+        
+        # FWHM span
+        fig.add_trace(go.Scatter(
+            x=[fwhm_left, fwhm_right],
+            y=[half_max, half_max],
+            mode='markers+lines',
+            name=f'FWHM = {fit_result.fwhm:.2f} nm',
+            marker=dict(size=10, color='#F18F01', symbol='diamond'),
+            line=dict(color='#F18F01', width=2, dash='dash'),
+            hovertemplate='FWHM boundary<extra></extra>'
+        ), row=1, col=1)
+        
+        # Add vertical lines at FWHM boundaries
+        fig.add_vline(x=fwhm_left, line_dash="dot", line_color="#F18F01", 
+                     opacity=0.5, row=1, col=1)
+        fig.add_vline(x=fwhm_right, line_dash="dot", line_color="#F18F01", 
+                     opacity=0.5, row=1, col=1)
+        fig.add_vline(x=x0, line_dash="dash", line_color="red", 
+                     opacity=0.5, row=1, col=1)
+        
+        # Add Lorentzian equation as annotation
+        equation_text = (
+            f"<b>Lorentzian Function:</b><br>"
+            f"I(λ) = A·γ²/[(λ-λ₀)² + γ²] + I₀<br>"
+            f"<br>"
+            f"A = {A:.1f}<br>"
+            f"λ₀ = {x0:.2f} nm<br>"
+            f"γ = {gamma:.2f} nm<br>"
+            f"I₀ = {y0:.1f}<br>"
+            f"FWHM = 2γ = {fit_result.fwhm:.2f} nm"
+        )
+        
+        fig.add_annotation(
+            x=0.98, y=0.98,
+            xref="x domain", yref="y domain",
+            text=equation_text,
+            showarrow=False,
+            bgcolor="rgba(255, 255, 255, 0.9)",
+            bordercolor="#667eea",
+            borderwidth=2,
+            borderpad=10,
+            font=dict(size=10, family="monospace"),
+            align="left",
+            xanchor="right",
+            yanchor="top",
+            row=1, col=1
+        )
+        
+        # ========== Residuals Plot ==========
+        residuals = counts - fit_result.fit_y
         
         fig.add_trace(go.Scatter(
-            x=[x0-gamma, x0+gamma],
-            y=[half_max, half_max],
+            x=wl, y=residuals,
             mode='markers',
-            marker=dict(size=10, color='orange', symbol='diamond'),
-            name=f'FWHM = {fit_result.fwhm:.2f} nm',
-            hovertemplate='FWHM boundary<extra></extra>'
-        ))
+            name='Residuals',
+            marker=dict(size=3, color='#6C757D'),
+            hovertemplate='Residual: %{y:.1f}<extra></extra>'
+        ), row=2, col=1)
+        
+        # Zero line
+        fig.add_hline(y=0, line_dash="dash", line_color="red", 
+                     opacity=0.5, row=2, col=1)
+        
+        # Add residual statistics
+        residual_std = np.std(residuals)
+        fig.add_annotation(
+            x=0.02, y=0.98,
+            xref="x2 domain", yref="y2 domain",
+            text=f"σ = {residual_std:.2f}",
+            showarrow=False,
+            bgcolor="rgba(255, 255, 255, 0.8)",
+            bordercolor="gray",
+            borderwidth=1,
+            font=dict(size=9),
+            xanchor="left",
+            yanchor="top",
+            row=2, col=1
+        )
     
-    # Layout
+    # ========== Layout ==========
     title_html = f"<b>{filename}</b><br>"
     title_html += f"<sub>Peak: {fit_result.peak_wavelength:.2f} nm | "
     title_html += f"FWHM: {fit_result.fwhm:.2f} nm | "
@@ -272,14 +385,22 @@ def create_spectrum_plot(wl: np.ndarray, counts: np.ndarray,
     
     fig.update_layout(
         title=title_html,
-        xaxis_title="Wavelength (nm)",
-        yaxis_title="Intensity (counts)",
         template="plotly_white",
         hovermode="x unified",
-        height=500,
+        height=700,
         showlegend=True,
-        legend=dict(x=0.02, y=0.98)
+        legend=dict(
+            x=0.02, y=0.65,
+            bgcolor="rgba(255, 255, 255, 0.8)",
+            bordercolor="gray",
+            borderwidth=1
+        )
     )
+    
+    # Update axes
+    fig.update_xaxes(title_text="Wavelength (nm)", row=2, col=1)
+    fig.update_yaxes(title_text="Intensity (counts)", row=1, col=1)
+    fig.update_yaxes(title_text="Residuals", row=2, col=1)
     
     return fig
 
@@ -854,3 +975,4 @@ st.markdown("""
     📧 Questions? Check the documentation or ask AI in chat mode
 </div>
 """, unsafe_allow_html=True)
+
