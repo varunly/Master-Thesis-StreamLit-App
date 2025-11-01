@@ -71,25 +71,74 @@ def analyze_spectrum(wl: np.ndarray, counts: np.ndarray) -> FitResult:
         FitResult object with all metrics
     """
     try:
-        # Smart initial guesses
+        # Find peak
         peak_idx = np.argmax(counts)
+        peak_val = counts[peak_idx]
         x0_guess = wl[peak_idx]
-        A_guess = counts[peak_idx] - np.percentile(counts, 10)
-        gamma_guess = (wl.max() - wl.min()) / 20
-        y0_guess = np.percentile(counts, 10)
         
-        # Bounds for stable fitting
+        # Estimate baseline from lower percentiles
+        baseline = np.percentile(counts, 5)
+        
+        # Amplitude is peak minus baseline
+        A_guess = peak_val - baseline
+        
+        # Ensure A_guess is positive
+        if A_guess <= 0:
+            A_guess = peak_val * 0.5
+            baseline = peak_val * 0.1
+        
+        # Estimate gamma (half width) from data
+        # Find points at half maximum
+        half_max = baseline + A_guess / 2
+        above_half = counts > half_max
+        if np.sum(above_half) > 2:
+            indices = np.where(above_half)[0]
+            width_estimate = wl[indices[-1]] - wl[indices[0]]
+            gamma_guess = width_estimate / 2
+        else:
+            gamma_guess = (wl.max() - wl.min()) / 10
+        
+        # Ensure gamma is reasonable
+        gamma_guess = max(gamma_guess, (wl[1] - wl[0]) * 2)  # At least 2 data points wide
+        gamma_guess = min(gamma_guess, (wl.max() - wl.min()) / 3)  # Not wider than 1/3 of range
+        
+        y0_guess = baseline
+        
+        # Set up bounds - make them wider and more flexible
+        wl_range = wl.max() - wl.min()
+        count_range = counts.max() - counts.min()
+        
+        # Lower bounds
+        A_lower = 0
+        x0_lower = wl.min() - wl_range * 0.1
+        gamma_lower = (wl[1] - wl[0]) if len(wl) > 1 else 0.1
+        y0_lower = min(0, counts.min() - count_range * 0.1)
+        
+        # Upper bounds
+        A_upper = count_range * 3
+        x0_upper = wl.max() + wl_range * 0.1
+        gamma_upper = wl_range
+        y0_upper = counts.max()
+        
         bounds = (
-            [0, wl.min(), 0, 0],
-            [np.inf, wl.max(), (wl.max()-wl.min())/2, counts.max()]
+            [A_lower, x0_lower, gamma_lower, y0_lower],
+            [A_upper, x0_upper, gamma_upper, y0_upper]
         )
         
-        # Perform fit
+        # Validate initial guesses are within bounds
+        p0 = [A_guess, x0_guess, gamma_guess, y0_guess]
+        
+        # Clamp initial guesses to be within bounds
+        for i in range(4):
+            p0[i] = max(bounds[0][i], min(p0[i], bounds[1][i]))
+        
+        # Perform fit with error handling
         popt, pcov = curve_fit(
             lorentzian, wl, counts,
-            p0=[A_guess, x0_guess, gamma_guess, y0_guess],
+            p0=p0,
             bounds=bounds,
-            maxfev=20000
+            maxfev=50000,
+            method='trf'  # Trust Region Reflective algorithm - more robust
         )
         
         A, x0, gamma, y0 = popt
@@ -98,32 +147,49 @@ def analyze_spectrum(wl: np.ndarray, counts: np.ndarray) -> FitResult:
         
         # Calculate metrics
         baseline_corrected = counts - y0
-        area = np.trapz(baseline_corrected, wl)
+        area = np.trapz(np.maximum(baseline_corrected, 0), wl)  # Only positive values
         r_squared = calculate_r_squared(counts, fit_y)
         snr = calculate_snr(counts)
+        
+        # Check if fit is reasonable
+        if r_squared < 0.5:
+            raise ValueError(f"Poor fit quality: R² = {r_squared:.3f}")
         
         fit_params = {
             'Amplitude': A,
             'Center': x0,
             'Gamma': gamma,
             'Baseline': y0,
-            'Std_Errors': np.sqrt(np.diag(pcov))
+            'Std_Errors': np.sqrt(np.diag(pcov)).tolist()
         }
         
         return FitResult(x0, A+y0, fwhm, area, fit_y, r_squared, snr, fit_params, fit_success=True)
         
     except Exception as e:
         # Fallback to basic metrics if fitting fails
-        st.warning(f"⚠️ Lorentzian fit failed: {str(e)}. Using raw data only.")
+        peak_idx = np.argmax(counts)
+        peak_wl = wl[peak_idx]
+        peak_int = counts[peak_idx]
+        
+        # Try to estimate FWHM from raw data
+        half_max = (peak_int + np.min(counts)) / 2
+        above_half = counts > half_max
+        
+        if np.sum(above_half) > 2:
+            indices = np.where(above_half)[0]
+            fwhm_estimate = wl[indices[-1]] - wl[indices[0]]
+        else:
+            fwhm_estimate = np.nan
+        
         return FitResult(
-            wl[np.argmax(counts)],
-            np.max(counts),
-            np.nan,
-            np.trapz(counts, wl),
+            peak_wl,
+            peak_int,
+            fwhm_estimate,
+            np.trapz(counts - np.min(counts), wl),
             counts,
             0.0,
             calculate_snr(counts),
-            {},
+            {'error': str(e)},
             fit_success=False
         )
 
@@ -238,7 +304,7 @@ def create_spectrum_plot(wl: np.ndarray, counts: np.ndarray,
             x=wl, y=fit_result.fit_y,
             mode='lines',
             name='Lorentzian Fit',
-            line=dict(color='red', width=3, dash='dash'),  # Changed to dash for better visibility
+            line=dict(color='red', width=3, dash='dash'),
             opacity=0.8,
             hovertemplate='Fit: %{y:.0f}<extra></extra>'
         ))
@@ -277,7 +343,10 @@ def create_spectrum_plot(wl: np.ndarray, counts: np.ndarray,
             line=dict(color="orange", width=2, dash="dash")
         )
     else:
-        st.warning(f"⚠️ Lorentzian fitting failed for {filename}")
+        if 'error' in fit_result.fit_params:
+            st.warning(f"⚠️ Lorentzian fitting failed for {filename}: {fit_result.fit_params['error']}")
+        else:
+            st.warning(f"⚠️ Lorentzian fitting failed for {filename}")
     
     # Layout
     title_html = f"<b>{filename}</b><br>"
@@ -287,7 +356,7 @@ def create_spectrum_plot(wl: np.ndarray, counts: np.ndarray,
         title_html += f"R²: {fit_result.r_squared:.4f} | "
         title_html += f"SNR: {fit_result.snr:.1f}</sub>"
     else:
-        title_html += f"<sub style='color: red;'>Fit Failed - Showing Raw Data Only</sub>"
+        title_html += f"<sub style='color: red;'>Fit Failed - Showing Raw Data Only | SNR: {fit_result.snr:.1f}</sub>"
     
     fig.update_layout(
         title=title_html,
@@ -506,7 +575,7 @@ if uploaded_files:
                     st.plotly_chart(fig, use_container_width=True)
                     
                     # Fit parameters
-                    if show_fit_params and result.fit_params:
+                    if show_fit_params and result.fit_params and result.fit_success:
                         with st.expander(f"🔍 Detailed Fit Parameters - {filename}"):
                             col1, col2, col3, col4 = st.columns(4)
                             col1.metric("Amplitude", f"{result.fit_params.get('Amplitude', 0):.1f}")
