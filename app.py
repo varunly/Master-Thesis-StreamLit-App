@@ -1,5 +1,5 @@
 # ==============================================================
-# Streamlit App: Random Laser ASC Analyzer + Advanced AI Analysis
+# Streamlit App: Random Laser ASC Analyzer
 # ==============================================================
 import streamlit as st
 import pandas as pd
@@ -10,7 +10,6 @@ from io import StringIO, BytesIO
 import zipfile
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-from openai import OpenAI
 from dataclasses import dataclass
 from typing import Tuple, Optional, List, Dict
 import re
@@ -217,166 +216,53 @@ def parse_asc_file(file_content: str, skip_rows: int) -> Tuple[np.ndarray, np.nd
 # VISUALIZATION FUNCTIONS
 # ==============================================================
 def create_spectrum_plot(wl: np.ndarray, counts: np.ndarray, 
-                        fit_result: FitResult, filename: str, 
-                        show_components: bool = True) -> go.Figure:
-    """Create comprehensive spectrum plot with Lorentzian fit and components"""
+                        fit_result: FitResult, filename: str) -> go.Figure:
+    """Create interactive spectrum plot with fit overlay"""
+    fig = go.Figure()
     
-    # Create subplots: main plot + residuals
-    from plotly.subplots import make_subplots
-    
-    fig = make_subplots(
-        rows=2, cols=1,
-        row_heights=[0.7, 0.3],
-        vertical_spacing=0.05,
-        subplot_titles=("Spectrum & Lorentzian Fit", "Fit Residuals"),
-        shared_xaxes=True
-    )
-    
-    # ========== Main Plot ==========
-    # Raw data
+    # Raw data - solid line
     fig.add_trace(go.Scatter(
         x=wl, y=counts,
-        mode='markers',
-        name='Experimental Data',
-        marker=dict(size=4, color='#2E86AB', opacity=0.6),
+        mode='lines',
+        name='Experimental',
+        line=dict(color='#2E86AB', width=2.5),
         hovertemplate='λ: %{x:.2f} nm<br>I: %{y:.0f}<extra></extra>'
-    ), row=1, col=1)
+    ))
     
-    # Lorentzian fit
+    # Lorentzian fit - dotted line
     if not np.isnan(fit_result.fwhm):
-        # Main fit line
         fig.add_trace(go.Scatter(
             x=wl, y=fit_result.fit_y,
             mode='lines',
             name='Lorentzian Fit',
-            line=dict(color='#A23B72', width=3),
+            line=dict(color='#A23B72', width=2.5, dash='dot'),
             hovertemplate='Fit: %{y:.0f}<extra></extra>'
-        ), row=1, col=1)
+        ))
         
-        # Extract fit parameters
-        A = fit_result.fit_params.get('Amplitude', 0)
-        x0 = fit_result.fit_params.get('Center', 0)
-        gamma = fit_result.fit_params.get('Gamma', 0)
-        y0 = fit_result.fit_params.get('Baseline', 0)
-        
-        # Show components if requested
-        if show_components:
-            # Baseline
-            fig.add_trace(go.Scatter(
-                x=wl,
-                y=np.full_like(wl, y0),
-                mode='lines',
-                name='Baseline',
-                line=dict(color='gray', width=2, dash='dot'),
-                hovertemplate='Baseline: %{y:.0f}<extra></extra>'
-            ), row=1, col=1)
-            
-            # Pure Lorentzian (without baseline)
-            pure_lorentzian = lorentzian(wl, A, x0, gamma, 0)
-            fig.add_trace(go.Scatter(
-                x=wl,
-                y=pure_lorentzian + y0,
-                mode='lines',
-                name='Pure Lorentzian',
-                line=dict(color='orange', width=2, dash='dashdot'),
-                opacity=0.7,
-                hovertemplate='Pure Lorentzian: %{y:.0f}<extra></extra>'
-            ), row=1, col=1)
-        
-        # Peak position marker
-        fig.add_trace(go.Scatter(
-            x=[x0],
-            y=[fit_result.peak_intensity],
-            mode='markers',
-            name='Peak Center',
-            marker=dict(size=15, color='red', symbol='star', line=dict(color='white', width=2)),
-            hovertemplate=f'Peak: λ₀={x0:.2f} nm<br>I={fit_result.peak_intensity:.0f}<extra></extra>'
-        ), row=1, col=1)
+        # Mark peak position
+        fig.add_vline(
+            x=fit_result.peak_wavelength,
+            line_dash="dash",
+            line_color="red",
+            annotation_text=f"λ₀ = {fit_result.peak_wavelength:.2f} nm",
+            annotation_position="top"
+        )
         
         # FWHM markers
-        half_max = (fit_result.peak_intensity + y0) / 2
-        fwhm_left = x0 - gamma
-        fwhm_right = x0 + gamma
+        gamma = fit_result.fwhm / 2
+        x0 = fit_result.peak_wavelength
+        half_max = fit_result.peak_intensity / 2
         
-        # FWHM span
         fig.add_trace(go.Scatter(
-            x=[fwhm_left, fwhm_right],
+            x=[x0-gamma, x0+gamma],
             y=[half_max, half_max],
-            mode='markers+lines',
-            name=f'FWHM = {fit_result.fwhm:.2f} nm',
-            marker=dict(size=10, color='#F18F01', symbol='diamond'),
-            line=dict(color='#F18F01', width=2, dash='dash'),
-            hovertemplate='FWHM boundary<extra></extra>'
-        ), row=1, col=1)
-        
-        # Add vertical lines at FWHM boundaries
-        fig.add_vline(x=fwhm_left, line_dash="dot", line_color="#F18F01", 
-                     opacity=0.5, row=1, col=1)
-        fig.add_vline(x=fwhm_right, line_dash="dot", line_color="#F18F01", 
-                     opacity=0.5, row=1, col=1)
-        fig.add_vline(x=x0, line_dash="dash", line_color="red", 
-                     opacity=0.5, row=1, col=1)
-        
-        # Add Lorentzian equation as annotation
-        equation_text = (
-            f"<b>Lorentzian Function:</b><br>"
-            f"I(λ) = A·γ²/[(λ-λ₀)² + γ²] + I₀<br>"
-            f"<br>"
-            f"A = {A:.1f}<br>"
-            f"λ₀ = {x0:.2f} nm<br>"
-            f"γ = {gamma:.2f} nm<br>"
-            f"I₀ = {y0:.1f}<br>"
-            f"FWHM = 2γ = {fit_result.fwhm:.2f} nm"
-        )
-        
-        fig.add_annotation(
-            x=0.98, y=0.98,
-            xref="x domain", yref="y domain",
-            text=equation_text,
-            showarrow=False,
-            bgcolor="rgba(255, 255, 255, 0.9)",
-            bordercolor="#667eea",
-            borderwidth=2,
-            borderpad=10,
-            font=dict(size=10, family="monospace"),
-            align="left",
-            xanchor="right",
-            yanchor="top",
-            row=1, col=1
-        )
-        
-        # ========== Residuals Plot ==========
-        residuals = counts - fit_result.fit_y
-        
-        fig.add_trace(go.Scatter(
-            x=wl, y=residuals,
             mode='markers',
-            name='Residuals',
-            marker=dict(size=3, color='#6C757D'),
-            hovertemplate='Residual: %{y:.1f}<extra></extra>'
-        ), row=2, col=1)
-        
-        # Zero line
-        fig.add_hline(y=0, line_dash="dash", line_color="red", 
-                     opacity=0.5, row=2, col=1)
-        
-        # Add residual statistics
-        residual_std = np.std(residuals)
-        fig.add_annotation(
-            x=0.02, y=0.98,
-            xref="x2 domain", yref="y2 domain",
-            text=f"σ = {residual_std:.2f}",
-            showarrow=False,
-            bgcolor="rgba(255, 255, 255, 0.8)",
-            bordercolor="gray",
-            borderwidth=1,
-            font=dict(size=9),
-            xanchor="left",
-            yanchor="top",
-            row=2, col=1
-        )
+            marker=dict(size=10, color='orange', symbol='diamond'),
+            name=f'FWHM = {fit_result.fwhm:.2f} nm',
+            hovertemplate='FWHM boundary<extra></extra>'
+        ))
     
-    # ========== Layout ==========
+    # Layout
     title_html = f"<b>{filename}</b><br>"
     title_html += f"<sub>Peak: {fit_result.peak_wavelength:.2f} nm | "
     title_html += f"FWHM: {fit_result.fwhm:.2f} nm | "
@@ -385,22 +271,14 @@ def create_spectrum_plot(wl: np.ndarray, counts: np.ndarray,
     
     fig.update_layout(
         title=title_html,
+        xaxis_title="Wavelength (nm)",
+        yaxis_title="Intensity (counts)",
         template="plotly_white",
         hovermode="x unified",
-        height=700,
+        height=500,
         showlegend=True,
-        legend=dict(
-            x=0.02, y=0.65,
-            bgcolor="rgba(255, 255, 255, 0.8)",
-            bordercolor="gray",
-            borderwidth=1
-        )
+        legend=dict(x=0.02, y=0.98)
     )
-    
-    # Update axes
-    fig.update_xaxes(title_text="Wavelength (nm)", row=2, col=1)
-    fig.update_yaxes(title_text="Intensity (counts)", row=1, col=1)
-    fig.update_yaxes(title_text="Residuals", row=2, col=1)
     
     return fig
 
@@ -499,116 +377,10 @@ def create_threshold_plot(df: pd.DataFrame, threshold: ThresholdAnalysis) -> go.
     return fig
 
 # ==============================================================
-# AI ANALYSIS FUNCTIONS
-# ==============================================================
-def generate_ai_summary(summary_df: pd.DataFrame, threshold: ThresholdAnalysis,
-                       api_key: str, model: str = "gpt-4o-mini") -> str:
-    """Generate comprehensive AI summary of experimental results"""
-    try:
-        client = OpenAI(api_key=api_key)
-        
-        # Prepare data summary
-        data_text = summary_df.to_string(index=False)
-        
-        # Calculate trends
-        valid = summary_df.dropna(subset=['QS Level', 'FWHM (nm)', 'Integrated Intensity'])
-        
-        if len(valid) > 1:
-            fwhm_trend = "decreasing" if valid['FWHM (nm)'].iloc[-1] < valid['FWHM (nm)'].iloc[0] else "increasing"
-            int_change = (valid['Integrated Intensity'].iloc[-1] / valid['Integrated Intensity'].iloc[0])
-            
-            trend_info = f"\n\nKey trends:\n- FWHM is {fwhm_trend} with Q-switch level\n"
-            trend_info += f"- Intensity increased by {int_change:.1f}× from lowest to highest QS\n"
-            
-            if threshold.threshold_found:
-                trend_info += f"- Lasing threshold detected at QS ≈ {threshold.threshold_qs:.1f}\n"
-                trend_info += f"- Slope changes from {threshold.slope_below:.2e} to {threshold.slope_above:.2e}\n"
-        else:
-            trend_info = ""
-        
-        # Construct prompt
-        prompt = f"""You are a photonics expert analyzing random laser experimental data. 
-
-Provide a concise, scientific summary (150-200 words) covering:
-
-1. **Lasing Behavior**: Comment on whether lasing threshold was observed based on the data
-2. **Spectral Characteristics**: Describe how FWHM and peak wavelength evolve with pump power (Q-switch level)
-3. **Intensity Trends**: Explain the relationship between integrated/peak intensity and Q-switch level
-4. **Physical Interpretation**: Briefly explain what these trends indicate about the random lasing mechanism
-5. **Data Quality**: Comment on R² values and measurement consistency
-
-Experimental Data:
-{data_text}
-{trend_info}
-
-Use precise scientific language. Reference specific values from the data."""
-
-        with st.spinner("🤖 AI is analyzing your data..."):
-            response = client.chat.completions.create(
-                model=model,
-                messages=[
-                    {"role": "system", "content": "You are an expert in photonics and laser physics, specializing in random lasers and spectroscopy."},
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=0.7,
-                max_tokens=500
-            )
-        
-        return response.choices[0].message.content
-        
-    except Exception as e:
-        raise Exception(f"AI analysis failed: {str(e)}")
-
-def ai_chat_interface(summary_df: pd.DataFrame, api_key: str, model: str = "gpt-4o-mini"):
-    """Interactive AI chat about experimental results"""
-    if 'chat_history' not in st.session_state:
-        st.session_state.chat_history = []
-    
-    # Display chat history
-    for message in st.session_state.chat_history:
-        with st.chat_message(message["role"]):
-            st.write(message["content"])
-    
-    # Chat input
-    if question := st.chat_input("Ask about your experimental results..."):
-        # Add user message
-        st.session_state.chat_history.append({"role": "user", "content": question})
-        
-        with st.chat_message("user"):
-            st.write(question)
-        
-        # Generate AI response
-        try:
-            client = OpenAI(api_key=api_key)
-            
-            context = f"Experimental data summary:\n{summary_df.to_string(index=False)}\n\n"
-            
-            messages = [
-                {"role": "system", "content": "You are an expert in random laser physics. Answer questions about the experimental data provided."},
-                {"role": "user", "content": context + question}
-            ]
-            
-            response = client.chat.completions.create(
-                model=model,
-                messages=messages,
-                temperature=0.7,
-                max_tokens=300
-            )
-            
-            answer = response.choices[0].message.content
-            st.session_state.chat_history.append({"role": "assistant", "content": answer})
-            
-            with st.chat_message("assistant"):
-                st.write(answer)
-                
-        except Exception as e:
-            st.error(f"Error: {e}")
-
-# ==============================================================
 # STREAMLIT APP
 # ==============================================================
 st.set_page_config(
-    page_title="AI Random Laser Analyzer",
+    page_title="Random Laser Analyzer",
     layout="wide",
     page_icon="🔬"
 )
@@ -632,9 +404,9 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # Header
-st.markdown('<p class="main-header">🔬 AI-Powered Random Laser Analyzer</p>', unsafe_allow_html=True)
+st.markdown('<p class="main-header">🔬 Random Laser Analyzer</p>', unsafe_allow_html=True)
 st.markdown("""
-Advanced spectral analysis tool with **Lorentzian fitting**, **threshold detection**, and **AI-powered insights**.
+Advanced spectral analysis tool with **Lorentzian fitting** and **threshold detection**.
 Upload your `.asc` files to begin automated analysis.
 """)
 
@@ -648,28 +420,6 @@ with st.sidebar:
         show_individual = st.checkbox("Show individual plots", True)
         show_fit_params = st.checkbox("Show fit parameters", False)
     
-    # AI settings
-    with st.expander("🤖 AI Settings", expanded=True):
-        enable_ai = st.checkbox("Enable AI Analysis", True)
-        
-        if enable_ai:
-            # Check for API key
-            if "OPENAI_API_KEY" in st.secrets.get("general", {}):
-                api_key = st.secrets["general"]["OPENAI_API_KEY"]
-                st.success("✅ API key loaded from secrets")
-            else:
-                api_key = st.text_input("OpenAI API Key", type="password")
-                if not api_key:
-                    st.warning("⚠️ Enter API key for AI features")
-            
-            model_choice = st.selectbox(
-                "Model",
-                ["gpt-4o-mini", "gpt-4o", "gpt-3.5-turbo"],
-                index=0
-            )
-            
-            enable_chat = st.checkbox("Enable AI Chat", False)
-    
     st.markdown("---")
     st.markdown("### 📊 Analysis Features")
     st.markdown("""
@@ -677,8 +427,8 @@ with st.sidebar:
     - ✅ FWHM & R² calculation
     - ✅ Threshold detection
     - ✅ SNR estimation
-    - ✅ AI-powered insights
     - ✅ Interactive visualizations
+    - ✅ Export to CSV/Excel
     """)
 
 # File Upload
@@ -860,32 +610,6 @@ if uploaded_files:
         st.plotly_chart(fig_threshold, use_container_width=True)
     
     # ==============================================================
-    # AI ANALYSIS
-    # ==============================================================
-    if enable_ai and api_key:
-        st.markdown("---")
-        st.subheader("🤖 AI-Powered Analysis")
-        
-        try:
-            ai_summary = generate_ai_summary(summary_df, threshold, api_key, model_choice)
-            
-            st.markdown("### 📝 Experimental Summary")
-            st.markdown(f"""
-            <div style="background-color: #f0f8ff; padding: 20px; border-radius: 10px; border-left: 5px solid #667eea;">
-            {ai_summary}
-            </div>
-            """, unsafe_allow_html=True)
-            
-            # AI Chat Interface
-            if enable_chat:
-                st.markdown("---")
-                st.markdown("### 💬 Ask AI About Your Results")
-                ai_chat_interface(summary_df, api_key, model_choice)
-                
-        except Exception as e:
-            st.error(f"❌ AI Analysis Error: {e}")
-    
-    # ==============================================================
     # DOWNLOADS
     # ==============================================================
     st.markdown("---")
@@ -941,7 +665,6 @@ else:
            - Fit Lorentzian curves to each spectrum
            - Calculate FWHM, peak wavelength, and integrated intensity
            - Detect lasing threshold (if applicable)
-           - Generate AI summary of trends
         3. **Explore Results**: Interactive plots allow zooming and hovering
         4. **Download**: Export results as CSV, Excel, or HTML plots
         
@@ -950,11 +673,6 @@ else:
         - `sample_qs_100.asc`
         - `QS150.asc`
         - `data_200_qs.asc`
-        
-        ### AI Features
-        - **Summary**: Automated interpretation of experimental trends
-        - **Chat**: Ask questions about your specific results
-        - **Recommendations**: Suggestions for data quality improvement
         """)
     
     with st.expander("📊 Example Data"):
@@ -971,8 +689,7 @@ Wavelength    Intensity1    Intensity2    Intensity3
 st.markdown("---")
 st.markdown("""
 <div style='text-align: center; color: #666; font-size: 0.9em;'>
-    Built with Streamlit • Powered by OpenAI GPT-4 • Lorentzian Fitting via SciPy<br>
-    📧 Questions? Check the documentation or ask AI in chat mode
+    Built with Streamlit • Lorentzian Fitting via SciPy<br>
+    📧 Questions? Check the documentation above
 </div>
 """, unsafe_allow_html=True)
-
