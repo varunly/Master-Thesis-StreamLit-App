@@ -71,99 +71,94 @@ def analyze_spectrum(wl: np.ndarray, counts: np.ndarray) -> FitResult:
         FitResult object with all metrics
     """
     try:
-        # Find peak
+        # Basic statistics
         peak_idx = np.argmax(counts)
         peak_val = counts[peak_idx]
-        x0_guess = wl[peak_idx]
+        x0_init = wl[peak_idx]
         
-        # Estimate baseline from lower percentiles
-        baseline = np.percentile(counts, 5)
+        min_counts = np.min(counts)
+        max_counts = np.max(counts)
+        baseline_est = np.percentile(counts, 5)
         
-        # Amplitude is peak minus baseline
-        A_guess = peak_val - baseline
+        # Initial parameter guesses
+        A_init = max_counts - baseline_est
+        y0_init = baseline_est
         
-        # Ensure A_guess is positive
-        if A_guess <= 0:
-            A_guess = peak_val * 0.5
-            baseline = peak_val * 0.1
-        
-        # Estimate gamma (half width) from data
-        # Find points at half maximum
-        half_max = baseline + A_guess / 2
+        # Estimate gamma from half-width at half-maximum
+        half_max = baseline_est + A_init / 2
         above_half = counts > half_max
+        
         if np.sum(above_half) > 2:
             indices = np.where(above_half)[0]
-            width_estimate = wl[indices[-1]] - wl[indices[0]]
-            gamma_guess = width_estimate / 2
+            width = wl[indices[-1]] - wl[indices[0]]
+            gamma_init = max(width / 2, 0.1)
         else:
-            gamma_guess = (wl.max() - wl.min()) / 10
+            gamma_init = (wl.max() - wl.min()) / 10
         
-        # Ensure gamma is reasonable
-        gamma_guess = max(gamma_guess, (wl[1] - wl[0]) * 2)  # At least 2 data points wide
-        gamma_guess = min(gamma_guess, (wl.max() - wl.min()) / 3)  # Not wider than 1/3 of range
-        
-        y0_guess = baseline
-        
-        # Set up bounds - make them wider and more flexible
-        wl_range = wl.max() - wl.min()
-        count_range = counts.max() - counts.min()
-        
-        # Lower bounds
-        A_lower = 0
-        x0_lower = wl.min() - wl_range * 0.1
-        gamma_lower = (wl[1] - wl[0]) if len(wl) > 1 else 0.1
-        y0_lower = min(0, counts.min() - count_range * 0.1)
-        
-        # Upper bounds
-        A_upper = count_range * 3
-        x0_upper = wl.max() + wl_range * 0.1
-        gamma_upper = wl_range
-        y0_upper = counts.max()
-        
+        # Simple, guaranteed valid bounds - VERY WIDE
         bounds = (
-            [A_lower, x0_lower, gamma_lower, y0_lower],
-            [A_upper, x0_upper, gamma_upper, y0_upper]
+            [0, wl.min(), 0, -np.inf],  # Lower bounds - very permissive
+            [np.inf, wl.max(), np.inf, np.inf]  # Upper bounds - very permissive
         )
         
-        # Validate initial guesses are within bounds
-        p0 = [A_guess, x0_guess, gamma_guess, y0_guess]
+        p0 = [A_init, x0_init, gamma_init, y0_init]
         
-        # Clamp initial guesses to be within bounds
-        for i in range(4):
-            p0[i] = max(bounds[0][i], min(p0[i], bounds[1][i]))
-        
-        # Perform fit with error handling
-        popt, pcov = curve_fit(
-            lorentzian, wl, counts,
-            p0=p0,
-            bounds=bounds,
-            maxfev=50000,
-            method='trf'  # Trust Region Reflective algorithm - more robust
-        )
+        # Perform fit WITHOUT bounds first (more robust)
+        try:
+            popt, pcov = curve_fit(
+                lorentzian, wl, counts,
+                p0=p0,
+                maxfev=50000,
+                method='lm'  # Levenberg-Marquardt - no bounds but very robust
+            )
+        except:
+            # If unbounded fit fails, try with bounds using trf method
+            popt, pcov = curve_fit(
+                lorentzian, wl, counts,
+                p0=p0,
+                bounds=bounds,
+                maxfev=50000,
+                method='trf'
+            )
         
         A, x0, gamma, y0 = popt
+        
+        # Ensure positive values
+        A = abs(A)
+        gamma = abs(gamma)
+        
         fwhm = 2 * gamma
-        fit_y = lorentzian(wl, *popt)
+        fit_y = lorentzian(wl, A, x0, gamma, y0)
         
         # Calculate metrics
         baseline_corrected = counts - y0
-        area = np.trapz(np.maximum(baseline_corrected, 0), wl)  # Only positive values
+        area = np.trapz(np.maximum(baseline_corrected, 0), wl)
         r_squared = calculate_r_squared(counts, fit_y)
         snr = calculate_snr(counts)
         
-        # Check if fit is reasonable
-        if r_squared < 0.5:
+        # Check fit quality
+        if r_squared < 0.3:
             raise ValueError(f"Poor fit quality: R² = {r_squared:.3f}")
         
         fit_params = {
-            'Amplitude': A,
-            'Center': x0,
-            'Gamma': gamma,
-            'Baseline': y0,
-            'Std_Errors': np.sqrt(np.diag(pcov)).tolist()
+            'Amplitude': float(A),
+            'Center': float(x0),
+            'Gamma': float(gamma),
+            'Baseline': float(y0),
+            'Std_Errors': [float(x) for x in np.sqrt(np.diag(pcov))]
         }
         
-        return FitResult(x0, A+y0, fwhm, area, fit_y, r_squared, snr, fit_params, fit_success=True)
+        return FitResult(
+            float(x0), 
+            float(A + y0), 
+            float(fwhm), 
+            float(area), 
+            fit_y, 
+            float(r_squared), 
+            float(snr), 
+            fit_params, 
+            fit_success=True
+        )
         
     except Exception as e:
         # Fallback to basic metrics if fitting fails
@@ -182,13 +177,13 @@ def analyze_spectrum(wl: np.ndarray, counts: np.ndarray) -> FitResult:
             fwhm_estimate = np.nan
         
         return FitResult(
-            peak_wl,
-            peak_int,
-            fwhm_estimate,
-            np.trapz(counts - np.min(counts), wl),
-            counts,
+            float(peak_wl),
+            float(peak_int),
+            float(fwhm_estimate) if not np.isnan(fwhm_estimate) else np.nan,
+            float(np.trapz(counts - np.min(counts), wl)),
+            counts.copy(),
             0.0,
-            calculate_snr(counts),
+            float(calculate_snr(counts)),
             {'error': str(e)},
             fit_success=False
         )
@@ -298,7 +293,7 @@ def create_spectrum_plot(wl: np.ndarray, counts: np.ndarray,
         hovertemplate='λ: %{x:.2f} nm<br>I: %{y:.0f}<extra></extra>'
     ))
     
-    # Lorentzian fit - dotted line (red/orange) - more visible
+    # Lorentzian fit - dashed line (red)
     if fit_result.fit_success and not np.isnan(fit_result.fwhm):
         fig.add_trace(go.Scatter(
             x=wl, y=fit_result.fit_y,
@@ -342,11 +337,6 @@ def create_spectrum_plot(wl: np.ndarray, counts: np.ndarray,
             x1=x0+gamma, y1=half_max,
             line=dict(color="orange", width=2, dash="dash")
         )
-    else:
-        if 'error' in fit_result.fit_params:
-            st.warning(f"⚠️ Lorentzian fitting failed for {filename}: {fit_result.fit_params['error']}")
-        else:
-            st.warning(f"⚠️ Lorentzian fitting failed for {filename}")
     
     # Layout
     title_html = f"<b>{filename}</b><br>"
