@@ -29,6 +29,7 @@ class FitResult:
     r_squared: float
     snr: float
     fit_params: Dict
+    fit_success: bool = True
 
 @dataclass
 class ThresholdAnalysis:
@@ -109,10 +110,11 @@ def analyze_spectrum(wl: np.ndarray, counts: np.ndarray) -> FitResult:
             'Std_Errors': np.sqrt(np.diag(pcov))
         }
         
-        return FitResult(x0, A+y0, fwhm, area, fit_y, r_squared, snr, fit_params)
+        return FitResult(x0, A+y0, fwhm, area, fit_y, r_squared, snr, fit_params, fit_success=True)
         
     except Exception as e:
         # Fallback to basic metrics if fitting fails
+        st.warning(f"⚠️ Lorentzian fit failed: {str(e)}. Using raw data only.")
         return FitResult(
             wl[np.argmax(counts)],
             np.max(counts),
@@ -121,7 +123,8 @@ def analyze_spectrum(wl: np.ndarray, counts: np.ndarray) -> FitResult:
             counts,
             0.0,
             calculate_snr(counts),
-            {}
+            {},
+            fit_success=False
         )
 
 def detect_threshold(qs_levels: np.ndarray, intensities: np.ndarray, 
@@ -220,31 +223,33 @@ def create_spectrum_plot(wl: np.ndarray, counts: np.ndarray,
     """Create interactive spectrum plot with fit overlay"""
     fig = go.Figure()
     
-    # Raw data - solid line
+    # Raw data - solid line (blue)
     fig.add_trace(go.Scatter(
         x=wl, y=counts,
         mode='lines',
-        name='Experimental',
-        line=dict(color='#2E86AB', width=2.5),
+        name='Experimental Data',
+        line=dict(color='#2E86AB', width=3),
         hovertemplate='λ: %{x:.2f} nm<br>I: %{y:.0f}<extra></extra>'
     ))
     
-    # Lorentzian fit - dotted line
-    if not np.isnan(fit_result.fwhm):
+    # Lorentzian fit - dotted line (red/orange) - more visible
+    if fit_result.fit_success and not np.isnan(fit_result.fwhm):
         fig.add_trace(go.Scatter(
             x=wl, y=fit_result.fit_y,
             mode='lines',
             name='Lorentzian Fit',
-            line=dict(color='#A23B72', width=2.5, dash='dot'),
+            line=dict(color='red', width=3, dash='dash'),  # Changed to dash for better visibility
+            opacity=0.8,
             hovertemplate='Fit: %{y:.0f}<extra></extra>'
         ))
         
         # Mark peak position
         fig.add_vline(
             x=fit_result.peak_wavelength,
-            line_dash="dash",
-            line_color="red",
-            annotation_text=f"λ₀ = {fit_result.peak_wavelength:.2f} nm",
+            line_dash="dot",
+            line_color="green",
+            line_width=2,
+            annotation_text=f"Peak λ = {fit_result.peak_wavelength:.2f} nm",
             annotation_position="top"
         )
         
@@ -256,18 +261,33 @@ def create_spectrum_plot(wl: np.ndarray, counts: np.ndarray,
         fig.add_trace(go.Scatter(
             x=[x0-gamma, x0+gamma],
             y=[half_max, half_max],
-            mode='markers',
-            marker=dict(size=10, color='orange', symbol='diamond'),
+            mode='markers+text',
+            marker=dict(size=12, color='orange', symbol='diamond'),
             name=f'FWHM = {fit_result.fwhm:.2f} nm',
+            text=['', f'FWHM={fit_result.fwhm:.2f}nm'],
+            textposition='top center',
             hovertemplate='FWHM boundary<extra></extra>'
         ))
+        
+        # Add horizontal line for FWHM
+        fig.add_shape(
+            type="line",
+            x0=x0-gamma, y0=half_max,
+            x1=x0+gamma, y1=half_max,
+            line=dict(color="orange", width=2, dash="dash")
+        )
+    else:
+        st.warning(f"⚠️ Lorentzian fitting failed for {filename}")
     
     # Layout
     title_html = f"<b>{filename}</b><br>"
-    title_html += f"<sub>Peak: {fit_result.peak_wavelength:.2f} nm | "
-    title_html += f"FWHM: {fit_result.fwhm:.2f} nm | "
-    title_html += f"R²: {fit_result.r_squared:.4f} | "
-    title_html += f"SNR: {fit_result.snr:.1f}</sub>"
+    if fit_result.fit_success:
+        title_html += f"<sub>Peak: {fit_result.peak_wavelength:.2f} nm | "
+        title_html += f"FWHM: {fit_result.fwhm:.2f} nm | "
+        title_html += f"R²: {fit_result.r_squared:.4f} | "
+        title_html += f"SNR: {fit_result.snr:.1f}</sub>"
+    else:
+        title_html += f"<sub style='color: red;'>Fit Failed - Showing Raw Data Only</sub>"
     
     fig.update_layout(
         title=title_html,
@@ -277,7 +297,13 @@ def create_spectrum_plot(wl: np.ndarray, counts: np.ndarray,
         hovermode="x unified",
         height=500,
         showlegend=True,
-        legend=dict(x=0.02, y=0.98)
+        legend=dict(
+            x=0.02, 
+            y=0.98,
+            bgcolor='rgba(255,255,255,0.8)',
+            bordercolor='black',
+            borderwidth=1
+        )
     )
     
     return fig
@@ -429,6 +455,12 @@ with st.sidebar:
     - ✅ SNR estimation
     - ✅ Interactive visualizations
     - ✅ Export to CSV/Excel
+    
+    ### 📈 Plot Legend
+    - **Blue solid line**: Experimental data
+    - **Red dashed line**: Lorentzian fit
+    - **Green dotted line**: Peak position
+    - **Orange diamonds**: FWHM boundaries
     """)
 
 # File Upload
@@ -503,7 +535,8 @@ if uploaded_files:
                     "FWHM (nm)": result.fwhm,
                     "Integrated Intensity": result.integrated_intensity,
                     "R²": result.r_squared,
-                    "SNR": result.snr
+                    "SNR": result.snr,
+                    "Fit Success": "✅" if result.fit_success else "❌"
                 })
                 
             except Exception as e:
@@ -662,11 +695,17 @@ else:
         
         1. **Upload Files**: Select one or more `.asc` spectral files
         2. **Automatic Analysis**: The app will:
-           - Fit Lorentzian curves to each spectrum
+           - Fit Lorentzian curves to each spectrum (shown as **red dashed line**)
            - Calculate FWHM, peak wavelength, and integrated intensity
            - Detect lasing threshold (if applicable)
         3. **Explore Results**: Interactive plots allow zooming and hovering
         4. **Download**: Export results as CSV, Excel, or HTML plots
+        
+        ### Plot Elements
+        - **Blue solid line**: Your experimental data
+        - **Red dashed line**: Lorentzian curve fit
+        - **Green dotted vertical line**: Peak wavelength position
+        - **Orange diamond markers**: FWHM (Full Width at Half Maximum) boundaries
         
         ### File Naming Convention
         For automatic Q-switch detection, include the value in filename:
