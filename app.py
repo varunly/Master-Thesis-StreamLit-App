@@ -15,6 +15,21 @@ from typing import Tuple, Optional, List, Dict
 import re
 from datetime import datetime
 
+# ==============================================================
+# HEADER WITH FAU LOGO
+# ==============================================================
+def add_logo_and_header():
+    """Add FAU logo and professional header"""
+    
+    # FAU Logo - REPLACE THIS URL WITH YOUR LOGO
+    logo_html = """
+    <div class="logo-container">
+        <img src="https://www.fau.eu/files/2020/09/FAU-Logo.png" 
+             alt="FAU Logo" 
+             style="height: 120px; margin-bottom: 1rem;">
+    </div>
+    """
+    st.markdown(logo_html, unsafe_allow_html=True)
 # Check for kaleido installation
 try:
     import plotly.io as pio
@@ -960,4 +975,5 @@ st.markdown(f"""
         📧 Questions? Email varun.solanki@fau.de
 </div>
 """, unsafe_allow_html=True)
+
 
