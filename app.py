@@ -788,6 +788,7 @@ st.markdown("---")
 st.markdown("""
 <div style='text-align: center; color: #666; font-size: 0.9em;'>
     Built with Streamlit • Lorentzian Fitting via SciPy<br>
-    📧 Questions? Check the documentation above
+    📧 Questions? Contact varun.solanki@fau.de
 </div>
 """, unsafe_allow_html=True)
+
