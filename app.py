@@ -957,9 +957,8 @@ Wavelength    Intensity1    Intensity2    Intensity3
 st.markdown("---")
 st.markdown(f"""
 <div style='text-align: center; color: #666; font-size: 0.9em;'>
-    Built with Streamlit • Lorentzian Fitting via SciPy • Image Export via Kaleido<br>
-   <br>
-    📧 Questions? Email varun.solanki@fau.de
+        📧 Questions? Email varun.solanki@fau.de
 </div>
 """, unsafe_allow_html=True)
+
 
