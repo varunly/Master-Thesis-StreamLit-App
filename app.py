@@ -15,6 +15,14 @@ from typing import Tuple, Optional, List, Dict
 import re
 from datetime import datetime
 
+# Check for kaleido installation
+try:
+    import plotly.io as pio
+    pio.kaleido.scope.mathjax = None  # Test kaleido
+    KALEIDO_AVAILABLE = True
+except:
+    KALEIDO_AVAILABLE = False
+
 # ==============================================================
 # CONFIGURATION
 # ==============================================================
@@ -277,6 +285,37 @@ def parse_asc_file(file_content: str, skip_rows: int) -> Tuple[np.ndarray, np.nd
     return wl, counts
 
 # ==============================================================
+# IMAGE EXPORT FUNCTION
+# ==============================================================
+def fig_to_image(fig: go.Figure, format: str, width: int, height: int, scale: int) -> bytes:
+    """
+    Convert plotly figure to image bytes
+    
+    Args:
+        fig: Plotly figure object
+        format: Image format (png, jpeg, svg, pdf)
+        width: Image width in pixels
+        height: Image height in pixels
+        scale: Image scale/quality
+    
+    Returns:
+        Image bytes
+    """
+    try:
+        img_bytes = fig.to_image(
+            format=format,
+            width=width,
+            height=height,
+            scale=scale,
+            engine="kaleido"
+        )
+        return img_bytes
+    except Exception as e:
+        st.error(f"❌ Image export failed: {str(e)}")
+        st.error("Please install kaleido: `pip install kaleido`")
+        raise
+
+# ==============================================================
 # VISUALIZATION FUNCTIONS
 # ==============================================================
 def create_spectrum_plot(wl: np.ndarray, counts: np.ndarray, 
@@ -495,6 +534,18 @@ Advanced spectral analysis tool with **Lorentzian fitting** and **threshold dete
 Upload your `.asc` files to begin automated analysis.
 """)
 
+# Check kaleido status
+if not KALEIDO_AVAILABLE:
+    st.warning("""
+    ⚠️ **Image export is disabled**: Kaleido package not found.
+    
+    To enable image downloads, install kaleido:
+    ```bash
+    pip install kaleido
+    ```
+    Then restart the app.
+    """)
+
 # Sidebar Configuration
 with st.sidebar:
     st.header("⚙️ Configuration")
@@ -505,6 +556,20 @@ with st.sidebar:
         show_individual = st.checkbox("Show individual plots", True)
         show_fit_params = st.checkbox("Show fit parameters", False)
     
+    # Export settings
+    if KALEIDO_AVAILABLE:
+        with st.expander("💾 Export Settings", expanded=False):
+            image_format = st.selectbox(
+                "Image format",
+                ["png", "jpeg", "svg", "pdf"],
+                index=0
+            )
+            image_width = st.number_input("Image width (px)", 800, 3000, 1200)
+            image_height = st.number_input("Image height (px)", 400, 2000, 800)
+            image_scale = st.slider("Image scale/quality", 1, 5, 2)
+    else:
+        st.error("📷 Image export disabled - kaleido not installed")
+    
     st.markdown("---")
     st.markdown("### 📊 Analysis Features")
     st.markdown("""
@@ -513,7 +578,7 @@ with st.sidebar:
     - ✅ Threshold detection
     - ✅ SNR estimation
     - ✅ Interactive visualizations
-    - ✅ Export to CSV/Excel
+    - ✅ Export to CSV/Excel/Images
     
     ### 📈 Plot Legend
     - **Blue solid line**: Experimental data
@@ -521,6 +586,12 @@ with st.sidebar:
     - **Green dotted line**: Peak position
     - **Orange diamonds**: FWHM boundaries
     """)
+    
+    # Kaleido status
+    if KALEIDO_AVAILABLE:
+        st.success("✅ Image export: Enabled")
+    else:
+        st.error("❌ Image export: Disabled")
 
 # File Upload
 uploaded_files = st.file_uploader(
@@ -542,67 +613,103 @@ if uploaded_files:
     
     summary_data = []
     plot_zip = BytesIO()
+    image_zip = BytesIO() if KALEIDO_AVAILABLE else None
     combined_fig = go.Figure()
+    all_figures = {}  # Store all figures
     
-    with zipfile.ZipFile(plot_zip, "w", zipfile.ZIP_DEFLATED) as zip_buffer:
+    zip_contexts = [zipfile.ZipFile(plot_zip, "w", zipfile.ZIP_DEFLATED)]
+    if KALEIDO_AVAILABLE:
+        zip_contexts.append(zipfile.ZipFile(image_zip, "w", zipfile.ZIP_DEFLATED))
+    
+    with zipfile.ZipFile(plot_zip, "w", zipfile.ZIP_DEFLATED) as html_buffer:
+        img_buffer = zipfile.ZipFile(image_zip, "w", zipfile.ZIP_DEFLATED) if KALEIDO_AVAILABLE else None
         
-        for idx, file in enumerate(uploaded_files):
-            filename = file.name
-            status.info(f"⚙️ Processing: {filename} ({idx+1}/{len(uploaded_files)})")
-            
-            try:
-                # Parse file
-                content = file.read().decode(errors='ignore')
-                wl, counts = parse_asc_file(content, skip_rows)
+        try:
+            for idx, file in enumerate(uploaded_files):
+                filename = file.name
+                status.info(f"⚙️ Processing: {filename} ({idx+1}/{len(uploaded_files)})")
                 
-                # Analyze spectrum
-                result = analyze_spectrum(wl, counts)
-                qs = extract_qs(filename)
-                
-                # Individual plot
-                if show_individual:
-                    fig = create_spectrum_plot(wl, counts, result, filename)
-                    st.plotly_chart(fig, use_container_width=True)
+                try:
+                    # Parse file
+                    content = file.read().decode(errors='ignore')
+                    wl, counts = parse_asc_file(content, skip_rows)
                     
-                    # Fit parameters
-                    if show_fit_params and result.fit_params and result.fit_success:
-                        with st.expander(f"🔍 Detailed Fit Parameters - {filename}"):
-                            col1, col2, col3, col4 = st.columns(4)
-                            col1.metric("Amplitude", f"{result.fit_params.get('Amplitude', 0):.1f}")
-                            col2.metric("Center (nm)", f"{result.fit_params.get('Center', 0):.2f}")
-                            col3.metric("Gamma", f"{result.fit_params.get('Gamma', 0):.2f}")
-                            col4.metric("Baseline", f"{result.fit_params.get('Baseline', 0):.1f}")
+                    # Analyze spectrum
+                    result = analyze_spectrum(wl, counts)
+                    qs = extract_qs(filename)
                     
-                    # Save to ZIP
-                    html = fig.to_html(full_html=False, include_plotlyjs='cdn').encode()
-                    zip_buffer.writestr(f"{filename.replace('.asc', '')}.html", html)
+                    # Individual plot
+                    if show_individual:
+                        fig = create_spectrum_plot(wl, counts, result, filename)
+                        st.plotly_chart(fig, use_container_width=True)
+                        
+                        # Download button for individual plot (only if kaleido available)
+                        if KALEIDO_AVAILABLE:
+                            col1, col2 = st.columns([3, 1])
+                            with col2:
+                                try:
+                                    # Convert figure to image
+                                    img_bytes = fig_to_image(fig, image_format, image_width, image_height, image_scale)
+                                    st.download_button(
+                                        label=f"📥 {image_format.upper()}",
+                                        data=img_bytes,
+                                        file_name=f"{filename.replace('.asc', '')}.{image_format}",
+                                        mime=f"image/{image_format}",
+                                        key=f"download_{idx}"
+                                    )
+                                    
+                                    # Save image to ZIP
+                                    if img_buffer:
+                                        img_buffer.writestr(f"{filename.replace('.asc', '')}.{image_format}", img_bytes)
+                                except Exception as e:
+                                    st.error(f"Image export failed: {e}")
+                        
+                        # Fit parameters
+                        if show_fit_params and result.fit_params and result.fit_success:
+                            with st.expander(f"🔍 Detailed Fit Parameters - {filename}"):
+                                col1, col2, col3, col4 = st.columns(4)
+                                col1.metric("Amplitude", f"{result.fit_params.get('Amplitude', 0):.1f}")
+                                col2.metric("Center (nm)", f"{result.fit_params.get('Center', 0):.2f}")
+                                col3.metric("Gamma", f"{result.fit_params.get('Gamma', 0):.2f}")
+                                col4.metric("Baseline", f"{result.fit_params.get('Baseline', 0):.1f}")
+                        
+                        # Save HTML to ZIP
+                        html = fig.to_html(full_html=False, include_plotlyjs='cdn').encode()
+                        html_buffer.writestr(f"{filename.replace('.asc', '')}.html", html)
+                        
+                        # Store figure
+                        all_figures[filename] = fig
+                    
+                    # Combined plot
+                    combined_fig.add_trace(go.Scatter(
+                        x=wl, y=counts,
+                        mode='lines',
+                        name=f"QS={qs:.0f}" if not np.isnan(qs) else filename,
+                        hovertemplate='%{y:.0f}<extra></extra>'
+                    ))
+                    
+                    # Add to summary
+                    summary_data.append({
+                        "File": filename,
+                        "QS Level": qs,
+                        "Peak λ (nm)": result.peak_wavelength,
+                        "Peak Intensity": result.peak_intensity,
+                        "FWHM (nm)": result.fwhm,
+                        "Integrated Intensity": result.integrated_intensity,
+                        "R²": result.r_squared,
+                        "SNR": result.snr,
+                        "Fit Success": "✅" if result.fit_success else "❌"
+                    })
+                    
+                except Exception as e:
+                    st.error(f"❌ Error processing {filename}: {e}")
+                    continue
                 
-                # Combined plot
-                combined_fig.add_trace(go.Scatter(
-                    x=wl, y=counts,
-                    mode='lines',
-                    name=f"QS={qs:.0f}" if not np.isnan(qs) else filename,
-                    hovertemplate='%{y:.0f}<extra></extra>'
-                ))
-                
-                # Add to summary
-                summary_data.append({
-                    "File": filename,
-                    "QS Level": qs,
-                    "Peak λ (nm)": result.peak_wavelength,
-                    "Peak Intensity": result.peak_intensity,
-                    "FWHM (nm)": result.fwhm,
-                    "Integrated Intensity": result.integrated_intensity,
-                    "R²": result.r_squared,
-                    "SNR": result.snr,
-                    "Fit Success": "✅" if result.fit_success else "❌"
-                })
-                
-            except Exception as e:
-                st.error(f"❌ Error processing {filename}: {e}")
-                continue
-            
-            progress_bar.progress((idx + 1) / len(uploaded_files))
+                progress_bar.progress((idx + 1) / len(uploaded_files))
+        
+        finally:
+            if img_buffer:
+                img_buffer.close()
     
     status.success("✅ All files processed successfully!")
     progress_bar.empty()
@@ -644,6 +751,21 @@ if uploaded_files:
     )
     st.plotly_chart(combined_fig, use_container_width=True)
     
+    # Download button for combined plot
+    if KALEIDO_AVAILABLE:
+        col1, col2, col3 = st.columns([2, 1, 2])
+        with col2:
+            try:
+                combined_img = fig_to_image(combined_fig, image_format, image_width, image_height, image_scale)
+                st.download_button(
+                    label=f"📥 Combined Plot ({image_format.upper()})",
+                    data=combined_img,
+                    file_name=f"combined_spectra.{image_format}",
+                    mime=f"image/{image_format}"
+                )
+            except Exception as e:
+                st.error(f"Combined plot export failed: {e}")
+    
     # Data Table
     st.markdown("---")
     st.subheader("📋 Analysis Results")
@@ -675,6 +797,7 @@ if uploaded_files:
     st.dataframe(styled_df, use_container_width=True)
     
     # Threshold Analysis
+    threshold_fig = None
     if summary_df['QS Level'].notna().sum() > 3:
         st.markdown("---")
         st.subheader("🎯 Threshold Detection")
@@ -698,8 +821,29 @@ if uploaded_files:
             st.metric("Slope (above)", f"{threshold.slope_above:.2e}")
         
         # Threshold plots
-        fig_threshold = create_threshold_plot(summary_df, threshold)
-        st.plotly_chart(fig_threshold, use_container_width=True)
+        threshold_fig = create_threshold_plot(summary_df, threshold)
+        st.plotly_chart(threshold_fig, use_container_width=True)
+        
+        # Download button for threshold plot
+        if KALEIDO_AVAILABLE:
+            col1, col2, col3 = st.columns([2, 1, 2])
+            with col2:
+                try:
+                    threshold_img = fig_to_image(
+                        threshold_fig, 
+                        image_format, 
+                        int(image_width * 1.5), 
+                        int(image_height * 1.2), 
+                        image_scale
+                    )
+                    st.download_button(
+                        label=f"📥 Threshold Plot ({image_format.upper()})",
+                        data=threshold_img,
+                        file_name=f"threshold_analysis.{image_format}",
+                        mime=f"image/{image_format}"
+                    )
+                except Exception as e:
+                    st.error(f"Threshold plot export failed: {e}")
     
     # ==============================================================
     # DOWNLOADS
@@ -707,12 +851,15 @@ if uploaded_files:
     st.markdown("---")
     st.subheader("💾 Export Results")
     
-    col1, col2, col3 = st.columns(3)
+    if KALEIDO_AVAILABLE:
+        col1, col2, col3, col4 = st.columns(4)
+    else:
+        col1, col2, col3 = st.columns(3)
     
     with col1:
         csv_data = summary_df.to_csv(index=False).encode()
         st.download_button(
-            "📥 Download CSV",
+            "📥 CSV Data",
             csv_data,
             f"laser_analysis_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
             "text/csv",
@@ -721,9 +868,9 @@ if uploaded_files:
     
     with col2:
         st.download_button(
-            "📦 Download Plots (ZIP)",
+            "📦 HTML Plots",
             plot_zip.getvalue(),
-            f"plots_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip",
+            f"plots_html_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip",
             "application/zip",
             use_container_width=True
         )
@@ -735,12 +882,22 @@ if uploaded_files:
             summary_df.to_excel(writer, sheet_name='Results', index=False)
         
         st.download_button(
-            "📊 Download Excel",
+            "📊 Excel",
             excel_buffer.getvalue(),
             f"analysis_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
             "application/vnd.ms-excel",
             use_container_width=True
         )
+    
+    if KALEIDO_AVAILABLE and image_zip:
+        with col4:
+            st.download_button(
+                f"🖼️ All Images ({image_format.upper()})",
+                image_zip.getvalue(),
+                f"plots_{image_format}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip",
+                "application/zip",
+                use_container_width=True
+            )
     
     st.success("✨ Analysis complete! All visualizations are interactive - hover, zoom, and pan to explore.")
 
@@ -758,13 +915,26 @@ else:
            - Calculate FWHM, peak wavelength, and integrated intensity
            - Detect lasing threshold (if applicable)
         3. **Explore Results**: Interactive plots allow zooming and hovering
-        4. **Download**: Export results as CSV, Excel, or HTML plots
+        4. **Download**: Export results as CSV, Excel, HTML plots, or high-quality images
         
         ### Plot Elements
         - **Blue solid line**: Your experimental data
         - **Red dashed line**: Lorentzian curve fit
         - **Green dotted vertical line**: Peak wavelength position
         - **Orange diamond markers**: FWHM (Full Width at Half Maximum) boundaries
+        
+        ### Export Options
+        - **Individual plots**: Download each plot as image using the button next to it
+        - **Combined plots**: Download the combined spectra view
+        - **Bulk export**: Download all plots as ZIP (HTML or Images)
+        - **Image formats**: PNG, JPEG, SVG, or PDF (requires kaleido)
+        - **Customization**: Adjust image size and quality in sidebar
+        
+        ### Installing Kaleido for Image Export
+        ```bash
+        pip install kaleido
+        ```
+        Then restart the app.
         
         ### File Naming Convention
         For automatic Q-switch detection, include the value in filename:
@@ -785,10 +955,10 @@ Wavelength    Intensity1    Intensity2    Intensity3
 
 # Footer
 st.markdown("---")
-st.markdown("""
+st.markdown(f"""
 <div style='text-align: center; color: #666; font-size: 0.9em;'>
-    Built with Streamlit • Lorentzian Fitting via SciPy<br>
-    📧 Questions? Contact varun.solanki@fau.de
+    Built with Streamlit • Lorentzian Fitting via SciPy • Image Export via Kaleido<br>
+    {'✅ Image export enabled' if KALEIDO_AVAILABLE else '❌ Install kaleido for image export: pip install kaleido'}<br>
+    📧 Questions? Check the documentation above
 </div>
 """, unsafe_allow_html=True)
-
