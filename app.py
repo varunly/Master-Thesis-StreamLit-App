@@ -24,7 +24,7 @@ def add_logo_and_header():
     # FAU Logo - REPLACE THIS URL WITH YOUR LOGO
     logo_html = """
     <div class="logo-container">
-        <img src="https://www.fau.eu/files/2020/09/FAU-Logo.png" 
+        <img src="https://www.google.com/imgres?q=lpt%20fau%20erlangen&imgurl=https%3A%2F%2Fwww.lpt.tf.fau.de%2Ffiles%2F2017%2F05%2Fcropped-LPT_Logo_transparent.png&imgrefurl=https%3A%2F%2Fwww.lpt.tf.fau.de%2F&docid=xzc27-vqcX1qTM&tbnid=dU3d5LcC72rxwM&vet=12ahUKEwjI5fS9tdOQAxUKcPEDHYkeD9MQM3oECBkQAA..i&w=1500&h=519&hcb=2&ved=2ahUKEwjI5fS9tdOQAxUKcPEDHYkeD9MQM3oECBkQAA" 
              alt="FAU Logo" 
              style="height: 120px; margin-bottom: 1rem;">
     </div>
@@ -975,5 +975,6 @@ st.markdown(f"""
         📧 Questions? Email varun.solanki@fau.de
 </div>
 """, unsafe_allow_html=True)
+
 
 
