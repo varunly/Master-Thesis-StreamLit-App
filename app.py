@@ -958,7 +958,8 @@ st.markdown("---")
 st.markdown(f"""
 <div style='text-align: center; color: #666; font-size: 0.9em;'>
     Built with Streamlit • Lorentzian Fitting via SciPy • Image Export via Kaleido<br>
-    {'✅ Image export enabled' if KALEIDO_AVAILABLE else '❌ Install kaleido for image export: pip install kaleido'}<br>
-    📧 Questions? Check the documentation above
+   <br>
+    📧 Questions? Email varun.solanki@fau.de
 </div>
 """, unsafe_allow_html=True)
+
