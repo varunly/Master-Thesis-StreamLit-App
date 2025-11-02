@@ -1,5 +1,5 @@
 # ==============================================================
-# Streamlit App: Random Laser ASC Analyzer
+# Streamlit App: Random Laser ASC Analyzer - FAU Edition
 # ==============================================================
 import streamlit as st
 import pandas as pd
@@ -14,11 +14,12 @@ from dataclasses import dataclass
 from typing import Tuple, Optional, List, Dict
 import re
 from datetime import datetime
+import base64
 
 # Check for kaleido installation
 try:
     import plotly.io as pio
-    pio.kaleido.scope.mathjax = None  # Test kaleido
+    pio.kaleido.scope.mathjax = None
     KALEIDO_AVAILABLE = True
 except:
     KALEIDO_AVAILABLE = False
@@ -48,7 +49,360 @@ class ThresholdAnalysis:
     threshold_found: bool
 
 # ==============================================================
-# CORE ANALYSIS FUNCTIONS
+# PAGE CONFIGURATION
+# ==============================================================
+st.set_page_config(
+    page_title="FAU Random Laser Analyzer",
+    layout="wide",
+    page_icon="🔬",
+    initial_sidebar_state="expanded"
+)
+
+# ==============================================================
+# CUSTOM CSS - PROFESSIONAL STYLING
+# ==============================================================
+st.markdown("""
+<style>
+    /* Import Google Fonts */
+    @import url('https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;700&family=Montserrat:wght@600;700&display=swap');
+    
+    /* Main background with gradient */
+    .stApp {
+        background: linear-gradient(135deg, #003865 0%, #005a8c 50%, #0077b3 100%);
+        background-attachment: fixed;
+    }
+    
+    /* Content area styling */
+    .main .block-container {
+        background: rgba(255, 255, 255, 0.98);
+        padding: 2rem 3rem;
+        border-radius: 20px;
+        box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+        margin-top: 2rem;
+        margin-bottom: 2rem;
+    }
+    
+    /* Header styling */
+    .main-header {
+        font-family: 'Montserrat', sans-serif;
+        font-size: 3.5rem;
+        font-weight: 700;
+        background: linear-gradient(135deg, #003865, #0077b3, #00a0e3);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        text-align: center;
+        margin-bottom: 0.5rem;
+        text-shadow: 2px 2px 4px rgba(0,0,0,0.1);
+        animation: fadeInDown 1s ease-in-out;
+    }
+    
+    .sub-header {
+        font-family: 'Roboto', sans-serif;
+        font-size: 1.3rem;
+        color: #555;
+        text-align: center;
+        margin-bottom: 2rem;
+        font-weight: 300;
+    }
+    
+    /* FAU Logo Container */
+    .logo-container {
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        margin-bottom: 2rem;
+        animation: fadeIn 1.5s ease-in-out;
+    }
+    
+    .university-name {
+        font-family: 'Montserrat', sans-serif;
+        font-size: 1.5rem;
+        color: #003865;
+        font-weight: 600;
+        text-align: center;
+        margin-top: 1rem;
+        letter-spacing: 1px;
+    }
+    
+    /* Sidebar styling */
+    [data-testid="stSidebar"] {
+        background: linear-gradient(180deg, #003865 0%, #005a8c 100%);
+    }
+    
+    [data-testid="stSidebar"] .block-container {
+        background: transparent;
+    }
+    
+    [data-testid="stSidebar"] * {
+        color: white !important;
+    }
+    
+    [data-testid="stSidebar"] .stSelectbox label,
+    [data-testid="stSidebar"] .stNumberInput label,
+    [data-testid="stSidebar"] .stSlider label,
+    [data-testid="stSidebar"] h1, h2, h3 {
+        color: white !important;
+        font-family: 'Roboto', sans-serif;
+    }
+    
+    /* Metric cards */
+    .stMetric {
+        background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
+        padding: 1.5rem;
+        border-radius: 15px;
+        box-shadow: 0 8px 16px rgba(0, 0, 0, 0.1);
+        border-left: 5px solid #0077b3;
+        transition: transform 0.3s ease, box-shadow 0.3s ease;
+    }
+    
+    .stMetric:hover {
+        transform: translateY(-5px);
+        box-shadow: 0 12px 24px rgba(0, 0, 0, 0.2);
+    }
+    
+    .stMetric label {
+        font-family: 'Roboto', sans-serif;
+        font-weight: 600;
+        color: #003865 !important;
+        font-size: 1.1rem;
+    }
+    
+    .stMetric [data-testid="stMetricValue"] {
+        font-family: 'Montserrat', sans-serif;
+        font-size: 2rem;
+        color: #0077b3 !important;
+        font-weight: 700;
+    }
+    
+    /* Section headers */
+    h2, h3 {
+        font-family: 'Montserrat', sans-serif;
+        color: #003865;
+        border-bottom: 3px solid #0077b3;
+        padding-bottom: 0.5rem;
+        margin-top: 2rem;
+    }
+    
+    /* File uploader styling */
+    [data-testid="stFileUploader"] {
+        background: linear-gradient(135deg, #e0f7ff 0%, #f0f9ff 100%);
+        border: 2px dashed #0077b3;
+        border-radius: 15px;
+        padding: 2rem;
+        transition: all 0.3s ease;
+    }
+    
+    [data-testid="stFileUploader"]:hover {
+        border-color: #003865;
+        background: linear-gradient(135deg, #d0f0ff 0%, #e5f5ff 100%);
+        transform: scale(1.02);
+    }
+    
+    /* Buttons */
+    .stButton > button {
+        background: linear-gradient(135deg, #0077b3, #005a8c);
+        color: white;
+        border: none;
+        border-radius: 10px;
+        padding: 0.75rem 2rem;
+        font-family: 'Roboto', sans-serif;
+        font-weight: 600;
+        font-size: 1rem;
+        transition: all 0.3s ease;
+        box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
+    }
+    
+    .stButton > button:hover {
+        background: linear-gradient(135deg, #005a8c, #003865);
+        transform: translateY(-2px);
+        box-shadow: 0 6px 12px rgba(0, 0, 0, 0.3);
+    }
+    
+    .stDownloadButton > button {
+        background: linear-gradient(135deg, #00a0e3, #0077b3);
+        color: white;
+        border: none;
+        border-radius: 10px;
+        padding: 0.75rem 1.5rem;
+        font-family: 'Roboto', sans-serif;
+        font-weight: 600;
+        transition: all 0.3s ease;
+        box-shadow: 0 4px 8px rgba(0, 119, 179, 0.3);
+    }
+    
+    .stDownloadButton > button:hover {
+        background: linear-gradient(135deg, #0077b3, #005a8c);
+        transform: translateY(-2px);
+        box-shadow: 0 6px 12px rgba(0, 119, 179, 0.4);
+    }
+    
+    /* Progress bar */
+    .stProgress > div > div {
+        background: linear-gradient(90deg, #0077b3, #00a0e3);
+    }
+    
+    /* Data table */
+    .dataframe {
+        border-radius: 10px;
+        overflow: hidden;
+        box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+    }
+    
+    /* Info boxes */
+    .stAlert {
+        border-radius: 10px;
+        border-left: 5px solid #0077b3;
+        font-family: 'Roboto', sans-serif;
+    }
+    
+    /* Expander */
+    .streamlit-expanderHeader {
+        background: linear-gradient(135deg, #f0f9ff, #e0f7ff);
+        border-radius: 10px;
+        font-family: 'Roboto', sans-serif;
+        font-weight: 600;
+        color: #003865;
+    }
+    
+    /* Success/Warning/Error boxes */
+    .element-container .stSuccess {
+        background: linear-gradient(135deg, #d4edda, #c3e6cb);
+        border-left: 5px solid #28a745;
+        border-radius: 10px;
+    }
+    
+    .element-container .stWarning {
+        background: linear-gradient(135deg, #fff3cd, #ffeaa7);
+        border-left: 5px solid #ffc107;
+        border-radius: 10px;
+    }
+    
+    .element-container .stError {
+        background: linear-gradient(135deg, #f8d7da, #f5c6cb);
+        border-left: 5px solid #dc3545;
+        border-radius: 10px;
+    }
+    
+    /* Footer */
+    .footer {
+        background: linear-gradient(135deg, #003865, #005a8c);
+        color: white;
+        padding: 2rem;
+        border-radius: 15px;
+        text-align: center;
+        margin-top: 3rem;
+        font-family: 'Roboto', sans-serif;
+        box-shadow: 0 -4px 8px rgba(0, 0, 0, 0.1);
+    }
+    
+    .footer a {
+        color: #00a0e3;
+        text-decoration: none;
+        font-weight: 600;
+    }
+    
+    .footer a:hover {
+        color: #00c8ff;
+        text-decoration: underline;
+    }
+    
+    /* Animations */
+    @keyframes fadeIn {
+        from { opacity: 0; }
+        to { opacity: 1; }
+    }
+    
+    @keyframes fadeInDown {
+        from {
+            opacity: 0;
+            transform: translateY(-20px);
+        }
+        to {
+            opacity: 1;
+            transform: translateY(0);
+        }
+    }
+    
+    @keyframes slideInRight {
+        from {
+            opacity: 0;
+            transform: translateX(50px);
+        }
+        to {
+            opacity: 1;
+            transform: translateX(0);
+        }
+    }
+    
+    /* Section containers */
+    .section-container {
+        background: linear-gradient(135deg, #ffffff, #f8f9fa);
+        padding: 2rem;
+        border-radius: 15px;
+        margin: 1.5rem 0;
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
+        border-left: 5px solid #0077b3;
+    }
+    
+    /* Plotly chart containers */
+    .js-plotly-plot {
+        border-radius: 15px;
+        box-shadow: 0 8px 16px rgba(0, 0, 0, 0.1);
+        overflow: hidden;
+    }
+    
+    /* Tabs */
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 8px;
+    }
+    
+    .stTabs [data-baseweb="tab"] {
+        background: linear-gradient(135deg, #f0f9ff, #e0f7ff);
+        border-radius: 10px 10px 0 0;
+        color: #003865;
+        font-weight: 600;
+    }
+    
+    .stTabs [aria-selected="true"] {
+        background: linear-gradient(135deg, #0077b3, #005a8c);
+        color: white;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+# ==============================================================
+# HEADER WITH FAU LOGO
+# ==============================================================
+def add_logo_and_header():
+    """Add FAU logo and professional header"""
+    
+    # FAU Logo (you can replace this URL with your actual logo file)
+    logo_html = """
+    <div class="logo-container">
+        <img src="https://www.fau.eu/files/2020/09/FAU-Logo.png" 
+             alt="FAU Logo" 
+             style="height: 120px; margin-bottom: 1rem;">
+    </div>
+    """
+    st.markdown(logo_html, unsafe_allow_html=True)
+    
+    st.markdown('<p class="university-name">Friedrich-Alexander-Universität Erlangen-Nürnberg</p>', 
+                unsafe_allow_html=True)
+    
+    st.markdown('<p class="main-header">🔬 Advanced Random Laser Analyzer</p>', 
+                unsafe_allow_html=True)
+    
+    st.markdown('''
+    <p class="sub-header">
+        Precision Spectral Analysis Platform with Lorentzian Fitting & Threshold Detection<br>
+        <em>Department of Physics | Photonics Research Group</em>
+    </p>
+    ''', unsafe_allow_html=True)
+
+add_logo_and_header()
+
+# ==============================================================
+# CORE ANALYSIS FUNCTIONS (Same as before)
 # ==============================================================
 def lorentzian(x: np.ndarray, A: float, x0: float, gamma: float, y0: float) -> np.ndarray:
     """Lorentzian lineshape function"""
@@ -68,31 +422,16 @@ def calculate_snr(signal: np.ndarray, noise_percentile: int = 10) -> float:
 
 @st.cache_data
 def analyze_spectrum(wl: np.ndarray, counts: np.ndarray) -> FitResult:
-    """
-    Perform Lorentzian fitting and extract spectral parameters
-    
-    Args:
-        wl: Wavelength array (nm)
-        counts: Intensity array
-    
-    Returns:
-        FitResult object with all metrics
-    """
+    """Perform Lorentzian fitting and extract spectral parameters"""
     try:
-        # Basic statistics
         peak_idx = np.argmax(counts)
         peak_val = counts[peak_idx]
         x0_init = wl[peak_idx]
         
-        min_counts = np.min(counts)
-        max_counts = np.max(counts)
         baseline_est = np.percentile(counts, 5)
-        
-        # Initial parameter guesses
-        A_init = max_counts - baseline_est
+        A_init = peak_val - baseline_est
         y0_init = baseline_est
         
-        # Estimate gamma from half-width at half-maximum
         half_max = baseline_est + A_init / 2
         above_half = counts > half_max
         
@@ -103,48 +442,25 @@ def analyze_spectrum(wl: np.ndarray, counts: np.ndarray) -> FitResult:
         else:
             gamma_init = (wl.max() - wl.min()) / 10
         
-        # Simple, guaranteed valid bounds - VERY WIDE
-        bounds = (
-            [0, wl.min(), 0, -np.inf],  # Lower bounds - very permissive
-            [np.inf, wl.max(), np.inf, np.inf]  # Upper bounds - very permissive
-        )
-        
+        bounds = ([0, wl.min(), 0, -np.inf], [np.inf, wl.max(), np.inf, np.inf])
         p0 = [A_init, x0_init, gamma_init, y0_init]
         
-        # Perform fit WITHOUT bounds first (more robust)
         try:
-            popt, pcov = curve_fit(
-                lorentzian, wl, counts,
-                p0=p0,
-                maxfev=50000,
-                method='lm'  # Levenberg-Marquardt - no bounds but very robust
-            )
+            popt, pcov = curve_fit(lorentzian, wl, counts, p0=p0, maxfev=50000, method='lm')
         except:
-            # If unbounded fit fails, try with bounds using trf method
-            popt, pcov = curve_fit(
-                lorentzian, wl, counts,
-                p0=p0,
-                bounds=bounds,
-                maxfev=50000,
-                method='trf'
-            )
+            popt, pcov = curve_fit(lorentzian, wl, counts, p0=p0, bounds=bounds, maxfev=50000, method='trf')
         
         A, x0, gamma, y0 = popt
-        
-        # Ensure positive values
-        A = abs(A)
-        gamma = abs(gamma)
+        A, gamma = abs(A), abs(gamma)
         
         fwhm = 2 * gamma
         fit_y = lorentzian(wl, A, x0, gamma, y0)
         
-        # Calculate metrics
         baseline_corrected = counts - y0
         area = np.trapz(np.maximum(baseline_corrected, 0), wl)
         r_squared = calculate_r_squared(counts, fit_y)
         snr = calculate_snr(counts)
         
-        # Check fit quality
         if r_squared < 0.3:
             raise ValueError(f"Poor fit quality: R² = {r_squared:.3f}")
         
@@ -156,25 +472,14 @@ def analyze_spectrum(wl: np.ndarray, counts: np.ndarray) -> FitResult:
             'Std_Errors': [float(x) for x in np.sqrt(np.diag(pcov))]
         }
         
-        return FitResult(
-            float(x0), 
-            float(A + y0), 
-            float(fwhm), 
-            float(area), 
-            fit_y, 
-            float(r_squared), 
-            float(snr), 
-            fit_params, 
-            fit_success=True
-        )
+        return FitResult(float(x0), float(A + y0), float(fwhm), float(area), 
+                        fit_y, float(r_squared), float(snr), fit_params, fit_success=True)
         
     except Exception as e:
-        # Fallback to basic metrics if fitting fails
         peak_idx = np.argmax(counts)
         peak_wl = wl[peak_idx]
         peak_int = counts[peak_idx]
         
-        # Try to estimate FWHM from raw data
         half_max = (peak_int + np.min(counts)) / 2
         above_half = counts > half_max
         
@@ -184,55 +489,32 @@ def analyze_spectrum(wl: np.ndarray, counts: np.ndarray) -> FitResult:
         else:
             fwhm_estimate = np.nan
         
-        return FitResult(
-            float(peak_wl),
-            float(peak_int),
-            float(fwhm_estimate) if not np.isnan(fwhm_estimate) else np.nan,
-            float(np.trapz(counts - np.min(counts), wl)),
-            counts.copy(),
-            0.0,
-            float(calculate_snr(counts)),
-            {'error': str(e)},
-            fit_success=False
-        )
+        return FitResult(float(peak_wl), float(peak_int), 
+                        float(fwhm_estimate) if not np.isnan(fwhm_estimate) else np.nan,
+                        float(np.trapz(counts - np.min(counts), wl)), counts.copy(),
+                        0.0, float(calculate_snr(counts)), {'error': str(e)}, fit_success=False)
 
-def detect_threshold(qs_levels: np.ndarray, intensities: np.ndarray, 
-                     min_points: int = 3) -> ThresholdAnalysis:
-    """
-    Detect lasing threshold using broken-stick algorithm
-    
-    Args:
-        qs_levels: Q-switch values
-        intensities: Integrated intensities
-        min_points: Minimum points for linear fit
-    
-    Returns:
-        ThresholdAnalysis object
-    """
+def detect_threshold(qs_levels: np.ndarray, intensities: np.ndarray, min_points: int = 3) -> ThresholdAnalysis:
+    """Detect lasing threshold using broken-stick algorithm"""
     if len(qs_levels) < 2 * min_points:
         return ThresholdAnalysis(None, 0, 0, False)
     
     try:
-        # Sort data
         idx = np.argsort(qs_levels)
         qs_sorted = qs_levels[idx]
         int_sorted = intensities[idx]
         
-        # Try each point as potential threshold
         best_threshold = None
         best_r2_sum = -np.inf
         best_slopes = (0, 0)
         
         for i in range(min_points, len(qs_sorted) - min_points):
-            # Fit two linear segments
             below = np.polyfit(qs_sorted[:i], int_sorted[:i], 1)
             above = np.polyfit(qs_sorted[i:], int_sorted[i:], 1)
             
-            # Calculate R² for both segments
             r2_below = calculate_r_squared(int_sorted[:i], np.polyval(below, qs_sorted[:i]))
             r2_above = calculate_r_squared(int_sorted[i:], np.polyval(above, qs_sorted[i:]))
             
-            # Look for maximum slope change
             r2_sum = r2_below + r2_above
             if r2_sum > best_r2_sum and above[0] > below[0]:
                 best_r2_sum = r2_sum
@@ -248,12 +530,8 @@ def detect_threshold(qs_levels: np.ndarray, intensities: np.ndarray,
 
 def extract_qs(filename: str) -> float:
     """Extract Q-switch value from filename using regex"""
-    patterns = [
-        r'qs[_\s-]*(\d+\.?\d*)',
-        r'(\d+\.?\d*)[_\s-]*qs',
-        r'q[_\s-]*(\d+\.?\d*)',
-        r'(\d+\.?\d+)',
-    ]
+    patterns = [r'qs[_\s-]*(\d+\.?\d*)', r'(\d+\.?\d*)[_\s-]*qs', 
+                r'q[_\s-]*(\d+\.?\d*)', r'(\d+\.?\d+)']
     
     for pattern in patterns:
         match = re.search(pattern, filename.lower())
@@ -267,13 +545,8 @@ def extract_qs(filename: str) -> float:
 @st.cache_data
 def parse_asc_file(file_content: str, skip_rows: int) -> Tuple[np.ndarray, np.ndarray]:
     """Parse .asc file and return wavelength and intensity arrays"""
-    df = pd.read_csv(
-        StringIO(file_content),
-        sep='\t',
-        decimal=',',
-        skiprows=skip_rows,
-        engine='python'
-    )
+    df = pd.read_csv(StringIO(file_content), sep='\t', decimal=',', 
+                     skiprows=skip_rows, engine='python')
     df = df.dropna(axis=1, how='all')
     
     if df.shape[1] < 2:
@@ -284,101 +557,62 @@ def parse_asc_file(file_content: str, skip_rows: int) -> Tuple[np.ndarray, np.nd
     
     return wl, counts
 
-# ==============================================================
-# IMAGE EXPORT FUNCTION
-# ==============================================================
 def fig_to_image(fig: go.Figure, format: str, width: int, height: int, scale: int) -> bytes:
-    """
-    Convert plotly figure to image bytes
-    
-    Args:
-        fig: Plotly figure object
-        format: Image format (png, jpeg, svg, pdf)
-        width: Image width in pixels
-        height: Image height in pixels
-        scale: Image scale/quality
-    
-    Returns:
-        Image bytes
-    """
+    """Convert plotly figure to image bytes"""
     try:
-        img_bytes = fig.to_image(
-            format=format,
-            width=width,
-            height=height,
-            scale=scale,
-            engine="kaleido"
-        )
+        img_bytes = fig.to_image(format=format, width=width, height=height, 
+                                scale=scale, engine="kaleido")
         return img_bytes
     except Exception as e:
         st.error(f"❌ Image export failed: {str(e)}")
-        st.error("Please install kaleido: `pip install kaleido`")
         raise
 
 # ==============================================================
-# VISUALIZATION FUNCTIONS
+# VISUALIZATION FUNCTIONS (Enhanced with FAU colors)
 # ==============================================================
 def create_spectrum_plot(wl: np.ndarray, counts: np.ndarray, 
                         fit_result: FitResult, filename: str) -> go.Figure:
     """Create interactive spectrum plot with fit overlay"""
     fig = go.Figure()
     
-    # Raw data - solid line (blue)
+    # FAU color scheme
+    fau_blue = '#003865'
+    fau_light_blue = '#0077b3'
+    
     fig.add_trace(go.Scatter(
-        x=wl, y=counts,
-        mode='lines',
-        name='Experimental Data',
-        line=dict(color='#2E86AB', width=3),
+        x=wl, y=counts, mode='lines', name='Experimental Data',
+        line=dict(color=fau_blue, width=3),
         hovertemplate='λ: %{x:.2f} nm<br>I: %{y:.0f}<extra></extra>'
     ))
     
-    # Lorentzian fit - dashed line (red)
     if fit_result.fit_success and not np.isnan(fit_result.fwhm):
         fig.add_trace(go.Scatter(
-            x=wl, y=fit_result.fit_y,
-            mode='lines',
-            name='Lorentzian Fit',
-            line=dict(color='red', width=3, dash='dash'),
-            opacity=0.8,
+            x=wl, y=fit_result.fit_y, mode='lines', name='Lorentzian Fit',
+            line=dict(color='#e63946', width=3, dash='dash'), opacity=0.8,
             hovertemplate='Fit: %{y:.0f}<extra></extra>'
         ))
         
-        # Mark peak position
-        fig.add_vline(
-            x=fit_result.peak_wavelength,
-            line_dash="dot",
-            line_color="green",
-            line_width=2,
-            annotation_text=f"Peak λ = {fit_result.peak_wavelength:.2f} nm",
-            annotation_position="top"
-        )
+        fig.add_vline(x=fit_result.peak_wavelength, line_dash="dot", 
+                     line_color="#2a9d8f", line_width=2,
+                     annotation_text=f"Peak λ = {fit_result.peak_wavelength:.2f} nm",
+                     annotation_position="top")
         
-        # FWHM markers
         gamma = fit_result.fwhm / 2
         x0 = fit_result.peak_wavelength
         half_max = fit_result.peak_intensity / 2
         
         fig.add_trace(go.Scatter(
-            x=[x0-gamma, x0+gamma],
-            y=[half_max, half_max],
-            mode='markers+text',
-            marker=dict(size=12, color='orange', symbol='diamond'),
+            x=[x0-gamma, x0+gamma], y=[half_max, half_max],
+            mode='markers+text', marker=dict(size=12, color='#f77f00', symbol='diamond'),
             name=f'FWHM = {fit_result.fwhm:.2f} nm',
-            text=['', f'FWHM={fit_result.fwhm:.2f}nm'],
-            textposition='top center',
+            text=['', f'FWHM={fit_result.fwhm:.2f}nm'], textposition='top center',
             hovertemplate='FWHM boundary<extra></extra>'
         ))
         
-        # Add horizontal line for FWHM
-        fig.add_shape(
-            type="line",
-            x0=x0-gamma, y0=half_max,
-            x1=x0+gamma, y1=half_max,
-            line=dict(color="orange", width=2, dash="dash")
-        )
+        fig.add_shape(type="line", x0=x0-gamma, y0=half_max, x1=x0+gamma, y1=half_max,
+                     line=dict(color="#f77f00", width=2, dash="dash"))
     
-    # Layout
-    title_html = f"<b>{filename}</b><br>"
+    title_html = f"<b style='color:{fau_blue}'>{filename}</b><br>"
     if fit_result.fit_success:
         title_html += f"<sub>Peak: {fit_result.peak_wavelength:.2f} nm | "
         title_html += f"FWHM: {fit_result.fwhm:.2f} nm | "
@@ -388,20 +622,12 @@ def create_spectrum_plot(wl: np.ndarray, counts: np.ndarray,
         title_html += f"<sub style='color: red;'>Fit Failed - Showing Raw Data Only | SNR: {fit_result.snr:.1f}</sub>"
     
     fig.update_layout(
-        title=title_html,
-        xaxis_title="Wavelength (nm)",
-        yaxis_title="Intensity (counts)",
-        template="plotly_white",
-        hovermode="x unified",
-        height=500,
-        showlegend=True,
-        legend=dict(
-            x=0.02, 
-            y=0.98,
-            bgcolor='rgba(255,255,255,0.8)',
-            bordercolor='black',
-            borderwidth=1
-        )
+        title=title_html, xaxis_title="Wavelength (nm)", yaxis_title="Intensity (counts)",
+        template="plotly_white", hovermode="x unified", height=500, showlegend=True,
+        legend=dict(x=0.02, y=0.98, bgcolor='rgba(255,255,255,0.9)', 
+                   bordercolor=fau_blue, borderwidth=2),
+        plot_bgcolor='rgba(240,249,255,0.5)',
+        font=dict(family="Roboto, sans-serif", size=12, color=fau_blue)
     )
     
     return fig
@@ -410,77 +636,33 @@ def create_threshold_plot(df: pd.DataFrame, threshold: ThresholdAnalysis) -> go.
     """Create comprehensive threshold analysis plot"""
     fig = make_subplots(
         rows=2, cols=2,
-        subplot_titles=(
-            "Integrated Intensity vs Q-Switch",
-            "FWHM vs Q-Switch",
-            "Peak Wavelength vs Q-Switch",
-            "Peak Intensity vs Q-Switch"
-        ),
-        vertical_spacing=0.12,
-        horizontal_spacing=0.1
+        subplot_titles=("Integrated Intensity vs Q-Switch", "FWHM vs Q-Switch",
+                       "Peak Wavelength vs Q-Switch", "Peak Intensity vs Q-Switch"),
+        vertical_spacing=0.12, horizontal_spacing=0.1
     )
     
     valid = df.dropna(subset=['QS Level'])
     qs = valid['QS Level'].values
     
-    # Plot 1: Integrated Intensity (main threshold indicator)
-    fig.add_trace(
-        go.Scatter(
-            x=qs, y=valid['Integrated Intensity'],
-            mode='lines+markers',
-            name='Integrated Intensity',
-            marker=dict(size=10, color='red'),
-            line=dict(width=3)
-        ),
-        row=1, col=1
-    )
+    colors = ['#e63946', '#0077b3', '#9b59b6', '#f77f00']
+    data = [
+        (valid['Integrated Intensity'], 1, 1),
+        (valid['FWHM (nm)'], 1, 2),
+        (valid['Peak λ (nm)'], 2, 1),
+        (valid['Peak Intensity'], 2, 2)
+    ]
     
-    if threshold.threshold_found:
-        fig.add_vline(
-            x=threshold.threshold_qs,
-            line_dash="dash",
-            line_color="green",
-            annotation_text=f"Threshold ≈ {threshold.threshold_qs:.1f}",
-            row=1, col=1
+    for idx, (y_data, row, col) in enumerate(data):
+        fig.add_trace(
+            go.Scatter(x=qs, y=y_data, mode='lines+markers',
+                      marker=dict(size=10, color=colors[idx]), line=dict(width=3)),
+            row=row, col=col
         )
     
-    # Plot 2: FWHM (spectral narrowing)
-    fig.add_trace(
-        go.Scatter(
-            x=qs, y=valid['FWHM (nm)'],
-            mode='lines+markers',
-            name='FWHM',
-            marker=dict(size=10, color='blue'),
-            line=dict(width=3)
-        ),
-        row=1, col=2
-    )
+    if threshold.threshold_found:
+        fig.add_vline(x=threshold.threshold_qs, line_dash="dash", line_color="green",
+                     annotation_text=f"Threshold ≈ {threshold.threshold_qs:.1f}", row=1, col=1)
     
-    # Plot 3: Peak Wavelength (mode competition)
-    fig.add_trace(
-        go.Scatter(
-            x=qs, y=valid['Peak λ (nm)'],
-            mode='lines+markers',
-            name='Peak λ',
-            marker=dict(size=10, color='purple'),
-            line=dict(width=3)
-        ),
-        row=2, col=1
-    )
-    
-    # Plot 4: Peak Intensity
-    fig.add_trace(
-        go.Scatter(
-            x=qs, y=valid['Peak Intensity'],
-            mode='lines+markers',
-            name='Peak Intensity',
-            marker=dict(size=10, color='orange'),
-            line=dict(width=3)
-        ),
-        row=2, col=2
-    )
-    
-    # Update axes
     fig.update_xaxes(title_text="Q-Switch Level", row=1, col=1)
     fig.update_xaxes(title_text="Q-Switch Level", row=1, col=2)
     fig.update_xaxes(title_text="Q-Switch Level", row=2, col=1)
@@ -492,113 +674,67 @@ def create_threshold_plot(df: pd.DataFrame, threshold: ThresholdAnalysis) -> go.
     fig.update_yaxes(title_text="Counts", row=2, col=2)
     
     fig.update_layout(
-        height=700,
-        showlegend=False,
-        template="plotly_white",
-        title_text="<b>Threshold Analysis Dashboard</b>"
+        height=700, showlegend=False, template="plotly_white",
+        title_text="<b style='color:#003865'>Threshold Analysis Dashboard</b>",
+        plot_bgcolor='rgba(240,249,255,0.3)',
+        font=dict(family="Roboto, sans-serif", size=11, color='#003865')
     )
     
     return fig
 
 # ==============================================================
-# STREAMLIT APP
+# SIDEBAR CONFIGURATION
 # ==============================================================
-st.set_page_config(
-    page_title="Random Laser Analyzer",
-    layout="wide",
-    page_icon="🔬"
-)
-
-# Custom CSS
-st.markdown("""
-<style>
-    .main-header {
-        font-size: 3rem;
-        font-weight: bold;
-        background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
-        -webkit-background-clip: text;
-        -webkit-text-fill-color: transparent;
-    }
-    .stMetric {
-        background-color: #f0f2f6;
-        padding: 10px;
-        border-radius: 5px;
-    }
-</style>
-""", unsafe_allow_html=True)
-
-# Header
-st.markdown('<p class="main-header">🔬 Random Laser Analyzer</p>', unsafe_allow_html=True)
-st.markdown("""
-Advanced spectral analysis tool with **Lorentzian fitting** and **threshold detection**.
-Upload your `.asc` files to begin automated analysis.
-""")
-
-# Check kaleido status
-if not KALEIDO_AVAILABLE:
-    st.warning("""
-    ⚠️ **Image export is disabled**: Kaleido package not found.
-    
-    To enable image downloads, install kaleido:
-    ```bash
-    pip install kaleido
-    ```
-    Then restart the app.
-    """)
-
-# Sidebar Configuration
 with st.sidebar:
-    st.header("⚙️ Configuration")
+    st.markdown("## ⚙️ Configuration Panel")
+    st.markdown("---")
     
-    # File parsing settings
     with st.expander("📁 File Settings", expanded=True):
         skip_rows = st.number_input("Header rows to skip", 0, 100, 38)
         show_individual = st.checkbox("Show individual plots", True)
         show_fit_params = st.checkbox("Show fit parameters", False)
     
-    # Export settings
     if KALEIDO_AVAILABLE:
         with st.expander("💾 Export Settings", expanded=False):
-            image_format = st.selectbox(
-                "Image format",
-                ["png", "jpeg", "svg", "pdf"],
-                index=0
-            )
+            image_format = st.selectbox("Image format", ["png", "jpeg", "svg", "pdf"], index=0)
             image_width = st.number_input("Image width (px)", 800, 3000, 1200)
             image_height = st.number_input("Image height (px)", 400, 2000, 800)
             image_scale = st.slider("Image scale/quality", 1, 5, 2)
-    else:
-        st.error("📷 Image export disabled - kaleido not installed")
     
     st.markdown("---")
     st.markdown("### 📊 Analysis Features")
     st.markdown("""
-    - ✅ Lorentzian curve fitting
-    - ✅ FWHM & R² calculation
-    - ✅ Threshold detection
-    - ✅ SNR estimation
-    - ✅ Interactive visualizations
-    - ✅ Export to CSV/Excel/Images
-    
-    ### 📈 Plot Legend
-    - **Blue solid line**: Experimental data
-    - **Red dashed line**: Lorentzian fit
-    - **Green dotted line**: Peak position
-    - **Orange diamonds**: FWHM boundaries
+    ✅ Lorentzian curve fitting  
+    ✅ FWHM & R² calculation  
+    ✅ Threshold detection  
+    ✅ SNR estimation  
+    ✅ Interactive visualizations  
+    ✅ Multi-format export  
     """)
     
-    # Kaleido status
+    st.markdown("---")
     if KALEIDO_AVAILABLE:
-        st.success("✅ Image export: Enabled")
+        st.success("✅ Image export enabled")
     else:
-        st.error("❌ Image export: Disabled")
+        st.error("❌ Kaleido not installed")
+    
+    st.markdown("---")
+    st.markdown("""
+    <div style='text-align: center; padding: 1rem; background: rgba(255,255,255,0.1); border-radius: 10px;'>
+        <small>Developed by<br><b>FAU Physics Department</b><br>
+        Photonics Research Group</small>
+    </div>
+    """, unsafe_allow_html=True)
 
-# File Upload
+# ==============================================================
+# FILE UPLOAD SECTION
+# ==============================================================
+st.markdown("---")
 uploaded_files = st.file_uploader(
-    "📤 Upload .asc spectrum files",
+    "📤 Upload Spectral Data Files (.asc format)",
     accept_multiple_files=True,
     type=['asc'],
-    help="Select multiple files for Q-switch series analysis"
+    help="Select one or more .asc files for comprehensive analysis"
 )
 
 # ==============================================================
@@ -607,7 +743,6 @@ uploaded_files = st.file_uploader(
 if uploaded_files:
     st.markdown("---")
     
-    # Initialize
     progress_bar = st.progress(0)
     status = st.empty()
     
@@ -615,11 +750,6 @@ if uploaded_files:
     plot_zip = BytesIO()
     image_zip = BytesIO() if KALEIDO_AVAILABLE else None
     combined_fig = go.Figure()
-    all_figures = {}  # Store all figures
-    
-    zip_contexts = [zipfile.ZipFile(plot_zip, "w", zipfile.ZIP_DEFLATED)]
-    if KALEIDO_AVAILABLE:
-        zip_contexts.append(zipfile.ZipFile(image_zip, "w", zipfile.ZIP_DEFLATED))
     
     with zipfile.ZipFile(plot_zip, "w", zipfile.ZIP_DEFLATED) as html_buffer:
         img_buffer = zipfile.ZipFile(image_zip, "w", zipfile.ZIP_DEFLATED) if KALEIDO_AVAILABLE else None
@@ -627,29 +757,24 @@ if uploaded_files:
         try:
             for idx, file in enumerate(uploaded_files):
                 filename = file.name
-                status.info(f"⚙️ Processing: {filename} ({idx+1}/{len(uploaded_files)})")
+                status.info(f"⚙️ Processing: **{filename}** ({idx+1}/{len(uploaded_files)})")
                 
                 try:
-                    # Parse file
                     content = file.read().decode(errors='ignore')
                     wl, counts = parse_asc_file(content, skip_rows)
-                    
-                    # Analyze spectrum
                     result = analyze_spectrum(wl, counts)
                     qs = extract_qs(filename)
                     
-                    # Individual plot
                     if show_individual:
                         fig = create_spectrum_plot(wl, counts, result, filename)
                         st.plotly_chart(fig, use_container_width=True)
                         
-                        # Download button for individual plot (only if kaleido available)
                         if KALEIDO_AVAILABLE:
                             col1, col2 = st.columns([3, 1])
                             with col2:
                                 try:
-                                    # Convert figure to image
-                                    img_bytes = fig_to_image(fig, image_format, image_width, image_height, image_scale)
+                                    img_bytes = fig_to_image(fig, image_format, image_width, 
+                                                            image_height, image_scale)
                                     st.download_button(
                                         label=f"📥 {image_format.upper()}",
                                         data=img_bytes,
@@ -657,14 +782,12 @@ if uploaded_files:
                                         mime=f"image/{image_format}",
                                         key=f"download_{idx}"
                                     )
-                                    
-                                    # Save image to ZIP
                                     if img_buffer:
-                                        img_buffer.writestr(f"{filename.replace('.asc', '')}.{image_format}", img_bytes)
+                                        img_buffer.writestr(f"{filename.replace('.asc', '')}.{image_format}", 
+                                                          img_bytes)
                                 except Exception as e:
                                     st.error(f"Image export failed: {e}")
                         
-                        # Fit parameters
                         if show_fit_params and result.fit_params and result.fit_success:
                             with st.expander(f"🔍 Detailed Fit Parameters - {filename}"):
                                 col1, col2, col3, col4 = st.columns(4)
@@ -673,31 +796,22 @@ if uploaded_files:
                                 col3.metric("Gamma", f"{result.fit_params.get('Gamma', 0):.2f}")
                                 col4.metric("Baseline", f"{result.fit_params.get('Baseline', 0):.1f}")
                         
-                        # Save HTML to ZIP
                         html = fig.to_html(full_html=False, include_plotlyjs='cdn').encode()
                         html_buffer.writestr(f"{filename.replace('.asc', '')}.html", html)
-                        
-                        # Store figure
-                        all_figures[filename] = fig
                     
-                    # Combined plot
                     combined_fig.add_trace(go.Scatter(
-                        x=wl, y=counts,
-                        mode='lines',
+                        x=wl, y=counts, mode='lines',
                         name=f"QS={qs:.0f}" if not np.isnan(qs) else filename,
                         hovertemplate='%{y:.0f}<extra></extra>'
                     ))
                     
-                    # Add to summary
                     summary_data.append({
-                        "File": filename,
-                        "QS Level": qs,
+                        "File": filename, "QS Level": qs,
                         "Peak λ (nm)": result.peak_wavelength,
                         "Peak Intensity": result.peak_intensity,
                         "FWHM (nm)": result.fwhm,
                         "Integrated Intensity": result.integrated_intensity,
-                        "R²": result.r_squared,
-                        "SNR": result.snr,
+                        "R²": result.r_squared, "SNR": result.snr,
                         "Fit Success": "✅" if result.fit_success else "❌"
                     })
                     
@@ -711,66 +825,58 @@ if uploaded_files:
             if img_buffer:
                 img_buffer.close()
     
-    status.success("✅ All files processed successfully!")
+    status.success("✅ **Analysis Complete!** All files processed successfully.")
     progress_bar.empty()
     
     # ==============================================================
     # RESULTS SECTION
     # ==============================================================
-    
     st.markdown("---")
+    st.markdown("## 📊 Analysis Summary")
     
-    # Summary Statistics
-    st.subheader("📊 Summary Statistics")
     col1, col2, col3, col4 = st.columns(4)
-    
     summary_df = pd.DataFrame(summary_data).sort_values("QS Level")
     
     with col1:
-        st.metric("Files Analyzed", len(summary_df))
+        st.metric("📁 Files Analyzed", len(summary_df))
     with col2:
-        avg_r2 = summary_df["R²"].mean()
-        st.metric("Avg R²", f"{avg_r2:.3f}")
+        st.metric("📈 Avg R²", f"{summary_df['R²'].mean():.3f}")
     with col3:
-        avg_fwhm = summary_df["FWHM (nm)"].mean()
-        st.metric("Avg FWHM", f"{avg_fwhm:.2f} nm")
+        st.metric("📏 Avg FWHM", f"{summary_df['FWHM (nm)'].mean():.2f} nm")
     with col4:
-        avg_snr = summary_df["SNR"].mean()
-        st.metric("Avg SNR", f"{avg_snr:.1f}")
+        st.metric("🔊 Avg SNR", f"{summary_df['SNR'].mean():.1f}")
     
     # Combined Spectra
     st.markdown("---")
-    st.subheader("🌈 Combined Spectra")
+    st.markdown("## 🌈 Combined Spectral Analysis")
     combined_fig.update_layout(
-        title="Spectral Evolution with Q-Switch Level",
-        xaxis_title="Wavelength (nm)",
-        yaxis_title="Intensity (counts)",
-        template="plotly_white",
-        hovermode="x unified",
-        height=600
+        title="<b style='color:#003865'>Spectral Evolution with Q-Switch Level</b>",
+        xaxis_title="Wavelength (nm)", yaxis_title="Intensity (counts)",
+        template="plotly_white", hovermode="x unified", height=600,
+        plot_bgcolor='rgba(240,249,255,0.5)',
+        font=dict(family="Roboto, sans-serif", size=12, color='#003865')
     )
     st.plotly_chart(combined_fig, use_container_width=True)
     
-    # Download button for combined plot
     if KALEIDO_AVAILABLE:
         col1, col2, col3 = st.columns([2, 1, 2])
         with col2:
             try:
-                combined_img = fig_to_image(combined_fig, image_format, image_width, image_height, image_scale)
+                combined_img = fig_to_image(combined_fig, image_format, image_width, 
+                                           image_height, image_scale)
                 st.download_button(
-                    label=f"📥 Combined Plot ({image_format.upper()})",
+                    label=f"📥 Download Combined Plot ({image_format.upper()})",
                     data=combined_img,
                     file_name=f"combined_spectra.{image_format}",
                     mime=f"image/{image_format}"
                 )
-            except Exception as e:
-                st.error(f"Combined plot export failed: {e}")
+            except:
+                pass
     
     # Data Table
     st.markdown("---")
-    st.subheader("📋 Analysis Results")
+    st.markdown("## 📋 Detailed Results Table")
     
-    # Format and color-code table
     def highlight_quality(val):
         if pd.isna(val):
             return ''
@@ -781,75 +887,56 @@ if uploaded_files:
         else:
             return 'background-color: #f8d7da'
     
-    styled_df = summary_df.style.applymap(
-        highlight_quality,
-        subset=['R²']
-    ).format({
-        'Peak λ (nm)': '{:.2f}',
-        'Peak Intensity': '{:.0f}',
-        'FWHM (nm)': '{:.2f}',
-        'Integrated Intensity': '{:.2e}',
-        'R²': '{:.4f}',
-        'SNR': '{:.1f}',
-        'QS Level': '{:.0f}'
+    styled_df = summary_df.style.applymap(highlight_quality, subset=['R²']).format({
+        'Peak λ (nm)': '{:.2f}', 'Peak Intensity': '{:.0f}',
+        'FWHM (nm)': '{:.2f}', 'Integrated Intensity': '{:.2e}',
+        'R²': '{:.4f}', 'SNR': '{:.1f}', 'QS Level': '{:.0f}'
     })
     
     st.dataframe(styled_df, use_container_width=True)
     
     # Threshold Analysis
-    threshold_fig = None
     if summary_df['QS Level'].notna().sum() > 3:
         st.markdown("---")
-        st.subheader("🎯 Threshold Detection")
+        st.markdown("## 🎯 Threshold Detection Analysis")
         
         valid = summary_df.dropna(subset=['QS Level', 'Integrated Intensity'])
-        threshold = detect_threshold(
-            valid['QS Level'].values,
-            valid['Integrated Intensity'].values
-        )
+        threshold = detect_threshold(valid['QS Level'].values, 
+                                    valid['Integrated Intensity'].values)
         
-        # Display threshold results
         col1, col2, col3 = st.columns(3)
         with col1:
             if threshold.threshold_found:
-                st.success(f"✅ Threshold detected at QS ≈ **{threshold.threshold_qs:.1f}**")
+                st.success(f"✅ **Threshold Detected**\n\nQS ≈ **{threshold.threshold_qs:.1f}**")
             else:
                 st.warning("⚠️ No clear threshold detected")
         with col2:
-            st.metric("Slope (below)", f"{threshold.slope_below:.2e}")
+            st.metric("Slope (below threshold)", f"{threshold.slope_below:.2e}")
         with col3:
-            st.metric("Slope (above)", f"{threshold.slope_above:.2e}")
+            st.metric("Slope (above threshold)", f"{threshold.slope_above:.2e}")
         
-        # Threshold plots
         threshold_fig = create_threshold_plot(summary_df, threshold)
         st.plotly_chart(threshold_fig, use_container_width=True)
         
-        # Download button for threshold plot
         if KALEIDO_AVAILABLE:
             col1, col2, col3 = st.columns([2, 1, 2])
             with col2:
                 try:
-                    threshold_img = fig_to_image(
-                        threshold_fig, 
-                        image_format, 
-                        int(image_width * 1.5), 
-                        int(image_height * 1.2), 
-                        image_scale
-                    )
+                    threshold_img = fig_to_image(threshold_fig, image_format, 
+                                                int(image_width * 1.5), 
+                                                int(image_height * 1.2), image_scale)
                     st.download_button(
                         label=f"📥 Threshold Plot ({image_format.upper()})",
                         data=threshold_img,
                         file_name=f"threshold_analysis.{image_format}",
                         mime=f"image/{image_format}"
                     )
-                except Exception as e:
-                    st.error(f"Threshold plot export failed: {e}")
+                except:
+                    pass
     
-    # ==============================================================
-    # DOWNLOADS
-    # ==============================================================
+    # Export Section
     st.markdown("---")
-    st.subheader("💾 Export Results")
+    st.markdown("## 💾 Export Results")
     
     if KALEIDO_AVAILABLE:
         col1, col2, col3, col4 = st.columns(4)
@@ -859,106 +946,103 @@ if uploaded_files:
     with col1:
         csv_data = summary_df.to_csv(index=False).encode()
         st.download_button(
-            "📥 CSV Data",
-            csv_data,
+            "📥 CSV Data", csv_data,
             f"laser_analysis_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-            "text/csv",
-            use_container_width=True
+            "text/csv", use_container_width=True
         )
     
     with col2:
         st.download_button(
-            "📦 HTML Plots",
-            plot_zip.getvalue(),
+            "📦 HTML Plots", plot_zip.getvalue(),
             f"plots_html_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip",
-            "application/zip",
-            use_container_width=True
+            "application/zip", use_container_width=True
         )
     
     with col3:
-        # Excel export with formatting
         excel_buffer = BytesIO()
         with pd.ExcelWriter(excel_buffer, engine='xlsxwriter') as writer:
             summary_df.to_excel(writer, sheet_name='Results', index=False)
-        
         st.download_button(
-            "📊 Excel",
-            excel_buffer.getvalue(),
+            "📊 Excel", excel_buffer.getvalue(),
             f"analysis_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
-            "application/vnd.ms-excel",
-            use_container_width=True
+            "application/vnd.ms-excel", use_container_width=True
         )
     
     if KALEIDO_AVAILABLE and image_zip:
         with col4:
             st.download_button(
-                f"🖼️ All Images ({image_format.upper()})",
-                image_zip.getvalue(),
+                f"🖼️ Images ({image_format.upper()})", image_zip.getvalue(),
                 f"plots_{image_format}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip",
-                "application/zip",
-                use_container_width=True
+                "application/zip", use_container_width=True
             )
-    
-    st.success("✨ Analysis complete! All visualizations are interactive - hover, zoom, and pan to explore.")
 
 else:
-    # Welcome screen
-    st.info("👆 Upload .asc files to begin analysis")
+    # Welcome Screen
+    st.info("👆 **Upload your .asc spectral files to begin advanced analysis**")
     
-    with st.expander("📖 How to Use"):
-        st.markdown("""
-        ### Quick Start Guide
-        
-        1. **Upload Files**: Select one or more `.asc` spectral files
-        2. **Automatic Analysis**: The app will:
-           - Fit Lorentzian curves to each spectrum (shown as **red dashed line**)
-           - Calculate FWHM, peak wavelength, and integrated intensity
-           - Detect lasing threshold (if applicable)
-        3. **Explore Results**: Interactive plots allow zooming and hovering
-        4. **Download**: Export results as CSV, Excel, HTML plots, or high-quality images
-        
-        ### Plot Elements
-        - **Blue solid line**: Your experimental data
-        - **Red dashed line**: Lorentzian curve fit
-        - **Green dotted vertical line**: Peak wavelength position
-        - **Orange diamond markers**: FWHM (Full Width at Half Maximum) boundaries
-        
-        ### Export Options
-        - **Individual plots**: Download each plot as image using the button next to it
-        - **Combined plots**: Download the combined spectra view
-        - **Bulk export**: Download all plots as ZIP (HTML or Images)
-        - **Image formats**: PNG, JPEG, SVG, or PDF (requires kaleido)
-        - **Customization**: Adjust image size and quality in sidebar
-        
-        ### Installing Kaleido for Image Export
-        ```bash
-        pip install kaleido
-        ```
-        Then restart the app.
-        
-        ### File Naming Convention
-        For automatic Q-switch detection, include the value in filename:
-        - `sample_qs_100.asc`
-        - `QS150.asc`
-        - `data_200_qs.asc`
-        """)
+    col1, col2 = st.columns(2)
     
-    with st.expander("📊 Example Data"):
-        st.code("""
-# .asc file format (tab-separated):
-Wavelength    Intensity1    Intensity2    Intensity3
-550.00        1200          1205          1198
-550.50        1350          1348          1352
-551.00        1500          1502          1498
-...
-        """)
+    with col1:
+        with st.expander("📖 User Guide", expanded=True):
+            st.markdown("""
+            ### Quick Start
+            
+            1. **Upload Files**: Click above to select `.asc` files
+            2. **Automatic Processing**: Advanced Lorentzian fitting
+            3. **Interactive Visualization**: Zoom, pan, and explore
+            4. **Export**: Download results in multiple formats
+            
+            ### File Naming Convention
+            Include Q-switch values in filenames:
+            - `sample_qs_100.asc`
+            - `QS150.asc`
+            - `data_200_qs.asc`
+            
+            ### Supported Formats
+            - Input: `.asc` (tab-separated)
+            - Export: CSV, Excel, HTML, PNG, JPEG, SVG, PDF
+            """)
+    
+    with col2:
+        with st.expander("🔬 Technical Details", expanded=True):
+            st.markdown("""
+            ### Analysis Methods
+            
+            **Spectral Fitting**
+            - Lorentzian lineshape function
+            - Levenberg-Marquardt optimization
+            - Automatic parameter estimation
+            
+            **Metrics Calculated**
+            - Peak wavelength & intensity
+            - FWHM (Full Width at Half Maximum)
+            - Integrated intensity
+            - R² (goodness of fit)
+            - Signal-to-Noise Ratio
+            
+            **Threshold Detection**
+            - Broken-stick algorithm
+            - Linear segmentation
+            - Slope change analysis
+            """)
 
-# Footer
+# ==============================================================
+# FOOTER
+# ==============================================================
 st.markdown("---")
-st.markdown(f"""
-<div style='text-align: center; color: #666; font-size: 0.9em;'>
-        📧 Questions? Email varun.solanki@fau.de
+st.markdown("""
+<div class="footer">
+    <h3 style="margin-top: 0;">Friedrich-Alexander-Universität Erlangen-Nürnberg</h3>
+    <p><strong>Department of Physics | Photonics Research Group</strong></p>
+    <p>Advanced Random Laser Analysis Platform</p>
+    <hr style="border-color: rgba(255,255,255,0.3); margin: 1.5rem 0;">
+    <p style="font-size: 0.9rem;">
+        🔬 Powered by Streamlit • 📊 Plotly Graphics • 🧮 SciPy Optimization<br>
+        💾 Multi-format Export • 🎨 Kaleido Rendering Engine
+    </p>
+    <p style="font-size: 0.85rem; margin-top: 1rem;">
+        <em>For support or questions, contact the Physics Department IT Team</em><br>
+        © 2024 FAU Erlangen-Nürnberg. All rights reserved.
+    </p>
 </div>
 """, unsafe_allow_html=True)
-
-
