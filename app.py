@@ -1,30 +1,32 @@
 # ==============================================================
-# Streamlit App: Random Laser ASC Analyzer with ND Correction
+# Streamlit App: Random Laser ASC Analyzer
+# Complete Version with ND Correction & Energy Calibration
 # ==============================================================
 import streamlit as st
 import pandas as pd
 import numpy as np
 from scipy.optimize import curve_fit
-from scipy.signal import find_peaks
 from io import StringIO, BytesIO
 import zipfile
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from dataclasses import dataclass
-from typing import Tuple, Optional, List, Dict
+from typing import Tuple, Optional, Dict
 import re
 from datetime import datetime
 
-# Check for kaleido installation
+# ==============================================================
+# CHECK FOR KALEIDO (IMAGE EXPORT)
+# ==============================================================
 try:
     import plotly.io as pio
-    pio.kaleido.scope.mathjax = None  # Test kaleido
+    pio.kaleido.scope.mathjax = None
     KALEIDO_AVAILABLE = True
 except:
     KALEIDO_AVAILABLE = False
 
 # ==============================================================
-# CONFIGURATION
+# DATA CLASSES
 # ==============================================================
 @dataclass
 class FitResult:
@@ -43,12 +45,13 @@ class FitResult:
 class ThresholdAnalysis:
     """Data class for threshold detection results"""
     threshold_qs: Optional[float]
+    threshold_energy: Optional[float]
     slope_below: float
     slope_above: float
     threshold_found: bool
 
 # ==============================================================
-# CORE ANALYSIS FUNCTIONS
+# CORE SPECTRAL ANALYSIS FUNCTIONS
 # ==============================================================
 def lorentzian(x: np.ndarray, A: float, x0: float, gamma: float, y0: float) -> np.ndarray:
     """Lorentzian lineshape function"""
@@ -66,71 +69,10 @@ def calculate_snr(signal: np.ndarray, noise_percentile: int = 10) -> float:
     peak = np.max(signal)
     return peak / noise if noise > 0 else np.inf
 
-# ==============================================================
-# ND FILTER FUNCTIONS
-# ==============================================================
-def extract_nd(filename: str) -> float:
-    """
-    Extract Neutral Density (ND) filter value from filename
-    
-    Parameters:
-    -----------
-    filename : str
-        Name of the file (e.g., "QS150_ND2.asc" or "ND=3_QS150.asc")
-    
-    Returns:
-    --------
-    float : ND filter value, or 0 if no ND filter mentioned
-    
-    Examples:
-    ---------
-    "QS150_ND2.asc" -> 2.0
-    "ND=3.5_QS150.asc" -> 3.5
-    "QS150.asc" -> 0.0
-    """
-    # Search for pattern "ND" followed by optional "=" or "_" then a number
-    match = re.search(r'ND[=_\s-]*(\d+\.?\d*)', filename, re.IGNORECASE)
-    
-    if match:
-        return float(match.group(1))
-    else:
-        return 0.0
-
-def apply_nd_correction(counts: np.ndarray, nd_value: float) -> np.ndarray:
-    """
-    Apply Neutral Density filter correction to intensity counts
-    
-    ND filters reduce intensity by 10^(-ND) 
-    To correct: multiply measured intensity by 10^(ND_value)
-    
-    Parameters:
-    -----------
-    counts : numpy array
-        Measured intensity counts
-    nd_value : float
-        ND filter value (optical density)
-    
-    Returns:
-    --------
-    numpy array : Corrected intensity counts
-    """
-    if nd_value == 0:
-        return counts
-    
-    correction_factor = 10 ** nd_value
-    return counts * correction_factor
-
 @st.cache_data
 def analyze_spectrum(wl: np.ndarray, counts: np.ndarray) -> FitResult:
     """
     Perform Lorentzian fitting and extract spectral parameters
-    
-    Args:
-        wl: Wavelength array (nm)
-        counts: Intensity array (already ND-corrected if applicable)
-    
-    Returns:
-        FitResult object with all metrics
     """
     try:
         # Basic statistics
@@ -138,15 +80,11 @@ def analyze_spectrum(wl: np.ndarray, counts: np.ndarray) -> FitResult:
         peak_val = counts[peak_idx]
         x0_init = wl[peak_idx]
         
-        min_counts = np.min(counts)
-        max_counts = np.max(counts)
         baseline_est = np.percentile(counts, 5)
-        
-        # Initial parameter guesses
-        A_init = max_counts - baseline_est
+        A_init = np.max(counts) - baseline_est
         y0_init = baseline_est
         
-        # Estimate gamma from half-width at half-maximum
+        # Estimate gamma
         half_max = baseline_est + A_init / 2
         above_half = counts > half_max
         
@@ -157,35 +95,20 @@ def analyze_spectrum(wl: np.ndarray, counts: np.ndarray) -> FitResult:
         else:
             gamma_init = (wl.max() - wl.min()) / 10
         
-        # Simple, guaranteed valid bounds - VERY WIDE
         bounds = (
-            [0, wl.min(), 0, -np.inf],  # Lower bounds
-            [np.inf, wl.max(), np.inf, np.inf]  # Upper bounds
+            [0, wl.min(), 0, -np.inf],
+            [np.inf, wl.max(), np.inf, np.inf]
         )
         
         p0 = [A_init, x0_init, gamma_init, y0_init]
         
-        # Perform fit WITHOUT bounds first (more robust)
+        # Perform fit
         try:
-            popt, pcov = curve_fit(
-                lorentzian, wl, counts,
-                p0=p0,
-                maxfev=50000,
-                method='lm'  # Levenberg-Marquardt
-            )
+            popt, pcov = curve_fit(lorentzian, wl, counts, p0=p0, maxfev=50000, method='lm')
         except:
-            # If unbounded fit fails, try with bounds
-            popt, pcov = curve_fit(
-                lorentzian, wl, counts,
-                p0=p0,
-                bounds=bounds,
-                maxfev=50000,
-                method='trf'
-            )
+            popt, pcov = curve_fit(lorentzian, wl, counts, p0=p0, bounds=bounds, maxfev=50000, method='trf')
         
         A, x0, gamma, y0 = popt
-        
-        # Ensure positive values
         A = abs(A)
         gamma = abs(gamma)
         
@@ -198,7 +121,6 @@ def analyze_spectrum(wl: np.ndarray, counts: np.ndarray) -> FitResult:
         r_squared = calculate_r_squared(counts, fit_y)
         snr = calculate_snr(counts)
         
-        # Check fit quality
         if r_squared < 0.3:
             raise ValueError(f"Poor fit quality: R² = {r_squared:.3f}")
         
@@ -211,24 +133,16 @@ def analyze_spectrum(wl: np.ndarray, counts: np.ndarray) -> FitResult:
         }
         
         return FitResult(
-            float(x0), 
-            float(A + y0), 
-            float(fwhm), 
-            float(area), 
-            fit_y, 
-            float(r_squared), 
-            float(snr), 
-            fit_params, 
-            fit_success=True
+            float(x0), float(A + y0), float(fwhm), float(area), 
+            fit_y, float(r_squared), float(snr), fit_params, fit_success=True
         )
         
     except Exception as e:
-        # Fallback to basic metrics if fitting fails
+        # Fallback
         peak_idx = np.argmax(counts)
         peak_wl = wl[peak_idx]
         peak_int = counts[peak_idx]
         
-        # Try to estimate FWHM from raw data
         half_max = (peak_int + np.min(counts)) / 2
         above_half = counts > half_max
         
@@ -239,69 +153,212 @@ def analyze_spectrum(wl: np.ndarray, counts: np.ndarray) -> FitResult:
             fwhm_estimate = np.nan
         
         return FitResult(
-            float(peak_wl),
-            float(peak_int),
+            float(peak_wl), float(peak_int),
             float(fwhm_estimate) if not np.isnan(fwhm_estimate) else np.nan,
             float(np.trapz(counts - np.min(counts), wl)),
-            counts.copy(),
-            0.0,
-            float(calculate_snr(counts)),
-            {'error': str(e)},
-            fit_success=False
+            counts.copy(), 0.0, float(calculate_snr(counts)),
+            {'error': str(e)}, fit_success=False
         )
 
-def detect_threshold(qs_levels: np.ndarray, intensities: np.ndarray, 
-                     min_points: int = 3) -> ThresholdAnalysis:
+# ==============================================================
+# ND FILTER CORRECTION FUNCTIONS
+# ==============================================================
+def extract_nd(filename: str) -> float:
+    """Extract ND filter value from filename"""
+    match = re.search(r'ND[=_\s-]*(\d+\.?\d*)', filename, re.IGNORECASE)
+    if match:
+        return float(match.group(1))
+    return 0.0
+
+def apply_nd_correction(counts: np.ndarray, nd_value: float) -> np.ndarray:
+    """Apply ND filter correction: multiply by 10^ND"""
+    if nd_value == 0:
+        return counts
+    correction_factor = 10 ** nd_value
+    return counts * correction_factor
+
+# ==============================================================
+# ENERGY CALIBRATION FUNCTIONS
+# ==============================================================
+@st.cache_data
+def parse_energy_file(file_content: str, file_type: str, file_bytes: bytes = None) -> Dict[float, Dict]:
     """
-    Detect lasing threshold using broken-stick algorithm
-    
-    Args:
-        qs_levels: Q-switch values
-        intensities: Integrated intensities
-        min_points: Minimum points for linear fit
-    
-    Returns:
-        ThresholdAnalysis object
+    Parse energy calibration file with TRANSPOSED format
+    Expected format:
+    - Row 1: QS_Level | 110 | 120 | 130 | ...
+    - Rows 2-11: Energy 1-10 with values for each QS
     """
-    if len(qs_levels) < 2 * min_points:
-        return ThresholdAnalysis(None, 0, 0, False)
+    energy_map = {}
     
     try:
-        # Sort data
-        idx = np.argsort(qs_levels)
-        qs_sorted = qs_levels[idx]
+        # Read file based on type
+        if file_bytes and (file_type == 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' or \
+           file_type == 'application/vnd.ms-excel' or \
+           'xlsx' in str(file_type).lower() or 'xls' in str(file_type).lower()):
+            import io
+            df = pd.read_excel(io.BytesIO(file_bytes), header=None)
+        else:
+            # Try CSV/TSV
+            for sep in ['\t', ',', ';', '|']:
+                try:
+                    df = pd.read_csv(StringIO(file_content), sep=sep, header=None)
+                    break
+                except:
+                    continue
+        
+        # Check for transposed format
+        first_row = df.iloc[0, :]
+        
+        # Detect if first cell is QS_Level label
+        if str(first_row.iloc[0]).lower().replace('_', '').replace(' ', '') in ['qslevel', 'qs', 'qswitch']:
+            # TRANSPOSED FORMAT
+            
+            # Extract QS levels from first row
+            qs_levels = []
+            for val in first_row.iloc[1:]:
+                try:
+                    qs_levels.append(float(val))
+                except:
+                    continue
+            
+            # Initialize storage
+            for qs in qs_levels:
+                energy_map[qs] = {'readings': []}
+            
+            # Read energy values from rows 2-11
+            for row_idx in range(1, len(df)):
+                row = df.iloc[row_idx, :]
+                row_label = str(row.iloc[0]).lower()
+                
+                # Skip empty or non-energy rows
+                if not any(x in row_label for x in ['energy', 'e', 'reading', 'measurement']):
+                    continue
+                
+                # Read energy values
+                for col_idx, qs in enumerate(qs_levels):
+                    try:
+                        energy_val = float(row.iloc[col_idx + 1])
+                        # Convert J to mJ if needed
+                        if energy_val < 0.1:
+                            energy_val = energy_val * 1000
+                        energy_map[qs]['readings'].append(energy_val)
+                    except:
+                        continue
+            
+            # Calculate statistics
+            final_map = {}
+            for qs in energy_map:
+                readings = energy_map[qs]['readings']
+                if readings:
+                    final_map[qs] = {
+                        'mean': np.mean(readings),
+                        'std': np.std(readings),
+                        'readings': readings,
+                        'n_readings': len(readings)
+                    }
+            
+            return final_map
+        
+        else:
+            # STANDARD FORMAT (QS in first column)
+            for idx, row in df.iterrows():
+                try:
+                    qs_level = float(row.iloc[0])
+                    energy_readings = []
+                    for val in row.iloc[1:]:
+                        try:
+                            if pd.notna(val) and str(val).strip():
+                                energy_val = float(val)
+                                if energy_val < 0.1:
+                                    energy_val = energy_val * 1000
+                                energy_readings.append(energy_val)
+                        except:
+                            continue
+                    
+                    if energy_readings:
+                        energy_map[qs_level] = {
+                            'mean': np.mean(energy_readings),
+                            'std': np.std(energy_readings),
+                            'readings': energy_readings,
+                            'n_readings': len(energy_readings)
+                        }
+                except:
+                    continue
+            
+            return energy_map
+        
+    except Exception as e:
+        st.error(f"Error parsing energy file: {str(e)}")
+        return {}
+
+def interpolate_energy(qs_value: float, energy_map: Dict[float, Dict]) -> Tuple[float, float]:
+    """Get energy for QS value with interpolation"""
+    if not energy_map or np.isnan(qs_value):
+        return np.nan, np.nan
+    
+    # Exact match
+    if qs_value in energy_map:
+        return energy_map[qs_value]['mean'], energy_map[qs_value]['std']
+    
+    # Interpolation
+    qs_values = sorted(energy_map.keys())
+    
+    if qs_value < qs_values[0]:
+        return energy_map[qs_values[0]]['mean'], energy_map[qs_values[0]]['std']
+    if qs_value > qs_values[-1]:
+        return energy_map[qs_values[-1]]['mean'], energy_map[qs_values[-1]]['std']
+    
+    energy_means = [energy_map[qs]['mean'] for qs in qs_values]
+    energy_stds = [energy_map[qs]['std'] for qs in qs_values]
+    
+    interp_mean = np.interp(qs_value, qs_values, energy_means)
+    interp_std = np.interp(qs_value, qs_values, energy_stds)
+    
+    return interp_mean, interp_std
+
+# ==============================================================
+# THRESHOLD DETECTION
+# ==============================================================
+def detect_threshold(x_values: np.ndarray, intensities: np.ndarray, 
+                     min_points: int = 3) -> ThresholdAnalysis:
+    """Detect lasing threshold using broken-stick algorithm"""
+    if len(x_values) < 2 * min_points:
+        return ThresholdAnalysis(None, None, 0, 0, False)
+    
+    try:
+        idx = np.argsort(x_values)
+        x_sorted = x_values[idx]
         int_sorted = intensities[idx]
         
-        # Try each point as potential threshold
         best_threshold = None
         best_r2_sum = -np.inf
         best_slopes = (0, 0)
         
-        for i in range(min_points, len(qs_sorted) - min_points):
-            # Fit two linear segments
-            below = np.polyfit(qs_sorted[:i], int_sorted[:i], 1)
-            above = np.polyfit(qs_sorted[i:], int_sorted[i:], 1)
+        for i in range(min_points, len(x_sorted) - min_points):
+            below = np.polyfit(x_sorted[:i], int_sorted[:i], 1)
+            above = np.polyfit(x_sorted[i:], int_sorted[i:], 1)
             
-            # Calculate R² for both segments
-            r2_below = calculate_r_squared(int_sorted[:i], np.polyval(below, qs_sorted[:i]))
-            r2_above = calculate_r_squared(int_sorted[i:], np.polyval(above, qs_sorted[i:]))
+            r2_below = calculate_r_squared(int_sorted[:i], np.polyval(below, x_sorted[:i]))
+            r2_above = calculate_r_squared(int_sorted[i:], np.polyval(above, x_sorted[i:]))
             
-            # Look for maximum slope change
             r2_sum = r2_below + r2_above
             if r2_sum > best_r2_sum and above[0] > below[0]:
                 best_r2_sum = r2_sum
-                best_threshold = qs_sorted[i]
+                best_threshold = x_sorted[i]
                 best_slopes = (below[0], above[0])
         
         found = best_threshold is not None and best_slopes[1] > 2 * best_slopes[0]
         
-        return ThresholdAnalysis(best_threshold, best_slopes[0], best_slopes[1], found)
+        return ThresholdAnalysis(None, best_threshold, best_slopes[0], best_slopes[1], found)
         
-    except Exception:
-        return ThresholdAnalysis(None, 0, 0, False)
+    except:
+        return ThresholdAnalysis(None, None, 0, 0, False)
 
+# ==============================================================
+# FILE PARSING
+# ==============================================================
 def extract_qs(filename: str) -> float:
-    """Extract Q-switch value from filename using regex"""
+    """Extract Q-switch value from filename"""
     patterns = [
         r'qs[_\s-]*(\d+\.?\d*)',
         r'(\d+\.?\d*)[_\s-]*qs',
@@ -320,7 +377,7 @@ def extract_qs(filename: str) -> float:
 
 @st.cache_data
 def parse_asc_file(file_content: str, skip_rows: int) -> Tuple[np.ndarray, np.ndarray]:
-    """Parse .asc file and return wavelength and intensity arrays"""
+    """Parse .asc file"""
     df = pd.read_csv(
         StringIO(file_content),
         sep='\t',
@@ -339,74 +396,52 @@ def parse_asc_file(file_content: str, skip_rows: int) -> Tuple[np.ndarray, np.nd
     return wl, counts
 
 # ==============================================================
-# IMAGE EXPORT FUNCTION
-# ==============================================================
-def fig_to_image(fig: go.Figure, format: str, width: int, height: int, scale: int) -> bytes:
-    """Convert plotly figure to image bytes"""
-    try:
-        img_bytes = fig.to_image(
-            format=format,
-            width=width,
-            height=height,
-            scale=scale,
-            engine="kaleido"
-        )
-        return img_bytes
-    except Exception as e:
-        st.error(f"❌ Image export failed: {str(e)}")
-        st.error("Please install kaleido: `pip install kaleido`")
-        raise
-
-# ==============================================================
 # VISUALIZATION FUNCTIONS
 # ==============================================================
 def create_spectrum_plot(wl: np.ndarray, counts_raw: np.ndarray, counts_corrected: np.ndarray,
-                        fit_result: FitResult, filename: str, nd_value: float) -> go.Figure:
-    """Create interactive spectrum plot with fit overlay and ND correction visualization"""
+                        fit_result: FitResult, filename: str, nd_value: float, 
+                        energy_mean: float = None, energy_std: float = None) -> go.Figure:
+    """Create spectrum plot with fit overlay"""
     fig = go.Figure()
     
-    # Show raw data if ND correction was applied
+    # Raw data if ND correction applied
     if nd_value > 0:
         fig.add_trace(go.Scatter(
             x=wl, y=counts_raw,
             mode='lines',
-            name='Raw Data (before ND correction)',
+            name='Raw Data',
             line=dict(color='lightgray', width=2),
-            opacity=0.5,
-            hovertemplate='Raw: %{y:.0f}<extra></extra>'
+            opacity=0.5
         ))
     
-    # Corrected data - solid line (blue)
+    # Corrected data
     fig.add_trace(go.Scatter(
         x=wl, y=counts_corrected,
         mode='lines',
-        name='ND-Corrected Data' if nd_value > 0 else 'Experimental Data',
-        line=dict(color='#2E86AB', width=3),
-        hovertemplate='λ: %{x:.2f} nm<br>I: %{y:.0f}<extra></extra>'
+        name='ND-Corrected Data' if nd_value > 0 else 'Data',
+        line=dict(color='#2E86AB', width=3)
     ))
     
-    # Lorentzian fit - dashed line (red)
+    # Fit
     if fit_result.fit_success and not np.isnan(fit_result.fwhm):
         fig.add_trace(go.Scatter(
             x=wl, y=fit_result.fit_y,
             mode='lines',
             name='Lorentzian Fit',
             line=dict(color='red', width=3, dash='dash'),
-            opacity=0.8,
-            hovertemplate='Fit: %{y:.0f}<extra></extra>'
+            opacity=0.8
         ))
         
-        # Mark peak position
+        # Peak marker
         fig.add_vline(
             x=fit_result.peak_wavelength,
             line_dash="dot",
             line_color="green",
             line_width=2,
-            annotation_text=f"Peak λ = {fit_result.peak_wavelength:.2f} nm",
-            annotation_position="top"
+            annotation_text=f"Peak: {fit_result.peak_wavelength:.2f} nm"
         )
         
-        # FWHM markers
+        # FWHM
         gamma = fit_result.fwhm / 2
         x0 = fit_result.peak_wavelength
         half_max = fit_result.peak_intensity / 2
@@ -418,11 +453,9 @@ def create_spectrum_plot(wl: np.ndarray, counts_raw: np.ndarray, counts_correcte
             marker=dict(size=12, color='orange', symbol='diamond'),
             name=f'FWHM = {fit_result.fwhm:.2f} nm',
             text=['', f'FWHM={fit_result.fwhm:.2f}nm'],
-            textposition='top center',
-            hovertemplate='FWHM boundary<extra></extra>'
+            textposition='top center'
         ))
         
-        # Add horizontal line for FWHM
         fig.add_shape(
             type="line",
             x0=x0-gamma, y0=half_max,
@@ -430,17 +463,15 @@ def create_spectrum_plot(wl: np.ndarray, counts_raw: np.ndarray, counts_correcte
             line=dict(color="orange", width=2, dash="dash")
         )
     
-    # Layout
+    # Title
     title_html = f"<b>{filename}</b><br>"
+    if energy_mean is not None and not np.isnan(energy_mean):
+        title_html += f"<sub>Pump Energy: {energy_mean:.3f}±{energy_std:.3f} mJ</sub><br>"
     if nd_value > 0:
-        title_html += f"<sub>ND Filter: {nd_value:.1f} (×{10**nd_value:.0f} correction applied)</sub><br>"
+        title_html += f"<sub>ND: {nd_value} (×{10**nd_value:.0f})</sub><br>"
     if fit_result.fit_success:
         title_html += f"<sub>Peak: {fit_result.peak_wavelength:.2f} nm | "
-        title_html += f"FWHM: {fit_result.fwhm:.2f} nm | "
-        title_html += f"R²: {fit_result.r_squared:.4f} | "
-        title_html += f"SNR: {fit_result.snr:.1f}</sub>"
-    else:
-        title_html += f"<sub style='color: red;'>Fit Failed - Showing Raw Data Only | SNR: {fit_result.snr:.1f}</sub>"
+        title_html += f"FWHM: {fit_result.fwhm:.2f} nm | R²: {fit_result.r_squared:.4f}</sub>"
     
     fig.update_layout(
         title=title_html,
@@ -449,76 +480,106 @@ def create_spectrum_plot(wl: np.ndarray, counts_raw: np.ndarray, counts_correcte
         template="plotly_white",
         hovermode="x unified",
         height=500,
-        showlegend=True,
-        legend=dict(
-            x=0.02, 
-            y=0.98,
-            bgcolor='rgba(255,255,255,0.8)',
-            bordercolor='black',
-            borderwidth=1
-        )
+        showlegend=True
     )
     
     return fig
 
-def create_threshold_plot(df: pd.DataFrame, threshold: ThresholdAnalysis) -> go.Figure:
-    """Create comprehensive threshold analysis plot"""
+def create_threshold_plot(df: pd.DataFrame, threshold: ThresholdAnalysis, use_energy: bool = True) -> go.Figure:
+    """Create threshold analysis with UNIFORM Y-AXIS SCALING"""
+    x_col = 'Pump Energy (mJ)' if use_energy and 'Pump Energy (mJ)' in df.columns else 'QS Level'
+    x_label = "Pump Energy (mJ)" if use_energy else "Q-Switch Level"
+    
     fig = make_subplots(
         rows=2, cols=2,
         subplot_titles=(
-            "Integrated Intensity vs Q-Switch",
-            "FWHM vs Q-Switch",
-            "Peak Wavelength vs Q-Switch",
-            "Peak Intensity vs Q-Switch"
+            f"Integrated Intensity vs {x_label}",
+            f"FWHM vs {x_label}",
+            f"Peak Wavelength vs {x_label}",
+            f"Peak Intensity vs {x_label}"
         ),
         vertical_spacing=0.12,
         horizontal_spacing=0.1
     )
     
-    valid = df.dropna(subset=['QS Level'])
-    qs = valid['QS Level'].values
+    valid = df.dropna(subset=[x_col])
+    x_values = valid[x_col].values
     
-    # Plot 1: Integrated Intensity (main threshold indicator)
+    # Calculate uniform y-ranges
+    int_min = valid['Integrated Intensity'].min()
+    int_max = valid['Integrated Intensity'].max()
+    int_padding = (int_max - int_min) * 0.1
+    int_range = [int_min - int_padding, int_max + int_padding]
+    
+    peak_min = valid['Peak Intensity'].min()
+    peak_max = valid['Peak Intensity'].max()
+    peak_padding = (peak_max - peak_min) * 0.1
+    peak_range = [peak_min - peak_padding, peak_max + peak_padding]
+    
+    fwhm_min = valid['FWHM (nm)'].min()
+    fwhm_max = valid['FWHM (nm)'].max()
+    fwhm_padding = (fwhm_max - fwhm_min) * 0.1
+    fwhm_range = [max(0, fwhm_min - fwhm_padding), fwhm_max + fwhm_padding]
+    
+    wl_min = valid['Peak λ (nm)'].min()
+    wl_max = valid['Peak λ (nm)'].max()
+    wl_padding = max((wl_max - wl_min) * 0.1, 2)
+    wl_range = [wl_min - wl_padding, wl_max + wl_padding]
+    
+    # Plot 1: Integrated Intensity
     fig.add_trace(
         go.Scatter(
-            x=qs, y=valid['Integrated Intensity'],
+            x=x_values, y=valid['Integrated Intensity'],
             mode='lines+markers',
-            name='Integrated Intensity',
             marker=dict(size=10, color='red'),
-            line=dict(width=3)
+            line=dict(width=3),
+            error_x=dict(
+                type='data',
+                array=valid['Energy Std (mJ)'].values if 'Energy Std (mJ)' in valid.columns else None,
+                visible=True if 'Energy Std (mJ)' in valid.columns else False
+            )
         ),
         row=1, col=1
     )
     
-    if threshold.threshold_found:
+    if threshold.threshold_found and threshold.threshold_energy:
         fig.add_vline(
-            x=threshold.threshold_qs,
+            x=threshold.threshold_energy,
             line_dash="dash",
             line_color="green",
-            annotation_text=f"Threshold ≈ {threshold.threshold_qs:.1f}",
+            line_width=2,
+            annotation_text=f"Threshold: {threshold.threshold_energy:.3f} mJ",
             row=1, col=1
         )
     
-    # Plot 2: FWHM (spectral narrowing)
+    # Plot 2: FWHM
     fig.add_trace(
         go.Scatter(
-            x=qs, y=valid['FWHM (nm)'],
+            x=x_values, y=valid['FWHM (nm)'],
             mode='lines+markers',
-            name='FWHM',
             marker=dict(size=10, color='blue'),
-            line=dict(width=3)
+            line=dict(width=3),
+            error_x=dict(
+                type='data',
+                array=valid['Energy Std (mJ)'].values if 'Energy Std (mJ)' in valid.columns else None,
+                visible=True if 'Energy Std (mJ)' in valid.columns else False
+            )
         ),
         row=1, col=2
     )
     
-    # Plot 3: Peak Wavelength (mode competition)
+    # Plot 3: Peak Wavelength
     fig.add_trace(
         go.Scatter(
-            x=qs, y=valid['Peak λ (nm)'],
+            x=x_values, y=valid['Peak λ (nm)'],
             mode='lines+markers',
-            name='Peak λ',
             marker=dict(size=10, color='purple'),
-            line=dict(width=3)
+            line=dict(width=3),
+            error_x=dict(
+                type='data',
+                array=valid['Energy Std (mJ)'].values if 'Energy Std (mJ)' in valid.columns else None,
+                visible=True if 'Energy Std (mJ)' in valid.columns else False
+            )
         ),
         row=2, col=1
     )
@@ -526,43 +587,53 @@ def create_threshold_plot(df: pd.DataFrame, threshold: ThresholdAnalysis) -> go.
     # Plot 4: Peak Intensity
     fig.add_trace(
         go.Scatter(
-            x=qs, y=valid['Peak Intensity'],
+            x=x_values, y=valid['Peak Intensity'],
             mode='lines+markers',
-            name='Peak Intensity',
             marker=dict(size=10, color='orange'),
-            line=dict(width=3)
+            line=dict(width=3),
+            error_x=dict(
+                type='data',
+                array=valid['Energy Std (mJ)'].values if 'Energy Std (mJ)' in valid.columns else None,
+                visible=True if 'Energy Std (mJ)' in valid.columns else False
+            )
         ),
         row=2, col=2
     )
     
-    # Update axes
-    fig.update_xaxes(title_text="Q-Switch Level", row=1, col=1)
-    fig.update_xaxes(title_text="Q-Switch Level", row=1, col=2)
-    fig.update_xaxes(title_text="Q-Switch Level", row=2, col=1)
-    fig.update_xaxes(title_text="Q-Switch Level", row=2, col=2)
+    # Apply uniform ranges
+    for row in [1, 2]:
+        for col in [1, 2]:
+            fig.update_xaxes(title_text=x_label, row=row, col=col)
     
-    fig.update_yaxes(title_text="Integrated Intensity", row=1, col=1)
-    fig.update_yaxes(title_text="FWHM (nm)", row=1, col=2)
-    fig.update_yaxes(title_text="Wavelength (nm)", row=2, col=1)
-    fig.update_yaxes(title_text="Counts", row=2, col=2)
+    fig.update_yaxes(title_text="Integrated Intensity", range=int_range, row=1, col=1)
+    fig.update_yaxes(title_text="FWHM (nm)", range=fwhm_range, row=1, col=2)
+    fig.update_yaxes(title_text="Wavelength (nm)", range=wl_range, row=2, col=1)
+    fig.update_yaxes(title_text="Counts", range=peak_range, row=2, col=2)
     
     fig.update_layout(
         height=700,
         showlegend=False,
         template="plotly_white",
-        title_text="<b>Threshold Analysis Dashboard (ND-Corrected)</b>"
+        title_text="<b>Threshold Analysis Dashboard</b>"
     )
     
     return fig
 
 # ==============================================================
+# IMAGE EXPORT
+# ==============================================================
+def fig_to_image(fig: go.Figure, format: str, width: int, height: int, scale: int) -> bytes:
+    """Convert figure to image"""
+    try:
+        return fig.to_image(format=format, width=width, height=height, scale=scale, engine="kaleido")
+    except Exception as e:
+        st.error(f"Image export failed: {str(e)}")
+        raise
+
+# ==============================================================
 # STREAMLIT APP
 # ==============================================================
-st.set_page_config(
-    page_title="Random Laser Analyzer",
-    layout="wide",
-    page_icon="🔬"
-)
+st.set_page_config(page_title="Random Laser Analyzer", layout="wide", page_icon="🔬")
 
 # Custom CSS
 st.markdown("""
@@ -574,12 +645,14 @@ st.markdown("""
         -webkit-background-clip: text;
         -webkit-text-fill-color: transparent;
     }
-    .stMetric {
-        background-color: #f0f2f6;
+    .energy-box {
+        background-color: #e6f3ff;
         padding: 10px;
         border-radius: 5px;
+        border-left: 4px solid #0066cc;
+        margin: 10px 0;
     }
-    .nd-correction-box {
+    .nd-box {
         background-color: #ffe4b5;
         padding: 10px;
         border-radius: 5px;
@@ -591,86 +664,123 @@ st.markdown("""
 
 # Header
 st.markdown('<p class="main-header">🔬 Random Laser Analyzer</p>', unsafe_allow_html=True)
-st.markdown("""
-Advanced spectral analysis tool with **Lorentzian fitting**, **ND filter correction**, and **threshold detection**.
-Upload your `.asc` files to begin automated analysis.
-""")
+st.markdown("**Lorentzian fitting • ND correction • Energy calibration • Threshold detection**")
 
-# Check kaleido status
 if not KALEIDO_AVAILABLE:
-    st.warning("""
-    ⚠️ **Image export is disabled**: Kaleido package not found.
-    
-    To enable image downloads, install kaleido:
-    ```bash
-    pip install kaleido
-    ```
-    Then restart the app.
-    """)
+    st.warning("⚠️ Image export disabled. Install kaleido: `pip install kaleido`")
 
-# Sidebar Configuration
+# Sidebar
 with st.sidebar:
     st.header("⚙️ Configuration")
     
-    # File parsing settings
     with st.expander("📁 File Settings", expanded=True):
         skip_rows = st.number_input("Header rows to skip", 0, 100, 38)
         show_individual = st.checkbox("Show individual plots", True)
         show_fit_params = st.checkbox("Show fit parameters", False)
-        apply_nd = st.checkbox("Apply ND filter correction", True, 
-                              help="Automatically detect and correct for ND filters from filename")
+        apply_nd = st.checkbox("Apply ND correction", True)
     
-    # Export settings
     if KALEIDO_AVAILABLE:
-        with st.expander("💾 Export Settings", expanded=False):
-            image_format = st.selectbox(
-                "Image format",
-                ["png", "jpeg", "svg", "pdf"],
-                index=0
-            )
-            image_width = st.number_input("Image width (px)", 800, 3000, 1200)
-            image_height = st.number_input("Image height (px)", 400, 2000, 800)
-            image_scale = st.slider("Image scale/quality", 1, 5, 2)
-    else:
-        st.error("📷 Image export disabled - kaleido not installed")
+        with st.expander("💾 Export Settings"):
+            image_format = st.selectbox("Format", ["png", "jpeg", "svg", "pdf"])
+            image_width = st.number_input("Width (px)", 800, 3000, 1200)
+            image_height = st.number_input("Height (px)", 400, 2000, 800)
+            image_scale = st.slider("Scale", 1, 5, 2)
     
     st.markdown("---")
-    st.markdown("### 📊 Analysis Features")
+    st.markdown("### 📊 Features")
     st.markdown("""
-    - ✅ Lorentzian curve fitting
+    - ✅ Lorentzian fitting
     - ✅ ND filter correction
-    - ✅ FWHM & R² calculation
+    - ✅ Energy calibration
+    - ✅ Uniform y-axis scaling
     - ✅ Threshold detection
-    - ✅ SNR estimation
-    - ✅ Interactive visualizations
-    - ✅ Export to CSV/Excel/Images
-    
-    ### 🔍 ND Filter Detection
-    Files with ND filters in the name 
-    (e.g., `QS150_ND2.asc`) will have
-    intensity multiplied by 10^ND
-    
-    ### 📈 Plot Legend
-    - **Gray line**: Raw data (if ND)
-    - **Blue solid**: Corrected data
-    - **Red dashed**: Lorentzian fit
-    - **Green dotted**: Peak position
-    - **Orange diamonds**: FWHM
+    - ✅ Interactive plots
     """)
-    
-    # Kaleido status
-    if KALEIDO_AVAILABLE:
-        st.success("✅ Image export: Enabled")
-    else:
-        st.error("❌ Image export: Disabled")
 
-# File Upload
-uploaded_files = st.file_uploader(
-    "📤 Upload .asc spectrum files",
-    accept_multiple_files=True,
-    type=['asc'],
-    help="Select multiple files for Q-switch series analysis. ND filters will be detected from filename."
-)
+# File Upload Section
+col1, col2 = st.columns([2, 1])
+
+with col1:
+    st.subheader("📤 Spectrum Files (.asc)")
+    uploaded_files = st.file_uploader(
+        "Upload spectrum files",
+        accept_multiple_files=True,
+        type=['asc'],
+        key="spectrum_files"
+    )
+
+with col2:
+    st.subheader("⚡ Energy Calibration")
+    
+    with st.expander("📋 Format Guide"):
+        st.markdown("""
+        **Excel/CSV with QS in columns:**
+        ```
+        QS_Level  110      120      130
+        Energy 1  8.2E-06  2.6E-05  6.7E-05
+        Energy 2  9.0E-06  2.5E-05  6.3E-05
+        ...
+        ```
+        Values in Joules auto-convert to mJ
+        """)
+    
+    energy_file = st.file_uploader(
+        "Upload energy file (optional)",
+        type=['csv', 'txt', 'tsv', 'xlsx', 'xls'],
+        key="energy_file"
+    )
+    
+    if energy_file:
+        with st.expander("📊 Preview", expanded=False):
+            try:
+                file_bytes = energy_file.read()
+                energy_file.seek(0)
+                
+                if energy_file.name.endswith(('.xlsx', '.xls')):
+                    energy_map = parse_energy_file(None, energy_file.type, file_bytes)
+                else:
+                    energy_content = file_bytes.decode(errors='ignore')
+                    energy_map = parse_energy_file(energy_content, energy_file.type, file_bytes)
+                
+                if energy_map:
+                    energy_df = pd.DataFrame([
+                        {
+                            'QS': qs,
+                            'Mean (mJ)': data['mean'],
+                            'Std (mJ)': data['std'],
+                            'N': data['n_readings']
+                        }
+                        for qs, data in energy_map.items()
+                    ]).sort_values('QS')
+                    
+                    st.dataframe(energy_df.style.format({
+                        'QS': '{:.0f}',
+                        'Mean (mJ)': '{:.4f}',
+                        'Std (mJ)': '{:.4f}',
+                        'N': '{:.0f}'
+                    }))
+                    
+                    fig = go.Figure()
+                    fig.add_trace(go.Scatter(
+                        x=energy_df['QS'],
+                        y=energy_df['Mean (mJ)'],
+                        error_y=dict(type='data', array=energy_df['Std (mJ)'], visible=True),
+                        mode='markers+lines',
+                        marker=dict(size=10, color='blue')
+                    ))
+                    fig.update_layout(
+                        title="Energy Calibration",
+                        xaxis_title="QS Level",
+                        yaxis_title="Energy (mJ)",
+                        height=300
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
+                else:
+                    st.error("Could not parse file")
+            except Exception as e:
+                st.error(f"Error: {str(e)}")
+    else:
+        energy_map = {}
 
 # ==============================================================
 # MAIN PROCESSING
@@ -678,7 +788,6 @@ uploaded_files = st.file_uploader(
 if uploaded_files:
     st.markdown("---")
     
-    # Initialize
     progress_bar = st.progress(0)
     status = st.empty()
     
@@ -686,11 +795,9 @@ if uploaded_files:
     plot_zip = BytesIO()
     image_zip = BytesIO() if KALEIDO_AVAILABLE else None
     combined_fig = go.Figure()
-    all_figures = {}  # Store all figures
     
-    zip_contexts = [zipfile.ZipFile(plot_zip, "w", zipfile.ZIP_DEFLATED)]
-    if KALEIDO_AVAILABLE:
-        zip_contexts.append(zipfile.ZipFile(image_zip, "w", zipfile.ZIP_DEFLATED))
+    if energy_map:
+        st.markdown('<div class="energy-box"><b>⚡ Energy calibration active</b></div>', unsafe_allow_html=True)
     
     with zipfile.ZipFile(plot_zip, "w", zipfile.ZIP_DEFLATED) as html_buffer:
         img_buffer = zipfile.ZipFile(image_zip, "w", zipfile.ZIP_DEFLATED) if KALEIDO_AVAILABLE else None
@@ -698,84 +805,89 @@ if uploaded_files:
         try:
             for idx, file in enumerate(uploaded_files):
                 filename = file.name
-                status.info(f"⚙️ Processing: {filename} ({idx+1}/{len(uploaded_files)})")
+                status.info(f"Processing: {filename} ({idx+1}/{len(uploaded_files)})")
                 
                 try:
-                    # Parse file
+                    # Parse
                     content = file.read().decode(errors='ignore')
                     wl, counts_raw = parse_asc_file(content, skip_rows)
                     
-                    # Extract metadata
+                    # Metadata
                     qs = extract_qs(filename)
                     nd_value = extract_nd(filename) if apply_nd else 0.0
                     
-                    # Apply ND correction if needed
+                    # Energy
+                    if energy_map and not np.isnan(qs):
+                        energy_mean, energy_std = interpolate_energy(qs, energy_map)
+                    else:
+                        energy_mean, energy_std = np.nan, np.nan
+                    
+                    # ND correction
                     if nd_value > 0:
                         counts_corrected = apply_nd_correction(counts_raw, nd_value)
-                        st.info(f"🔧 Applied ND={nd_value} correction (×{10**nd_value:.0f}) to {filename}")
+                        if show_individual:
+                            st.info(f"🔧 ND={nd_value} correction (×{10**nd_value:.0f})")
                     else:
                         counts_corrected = counts_raw.copy()
                     
-                    # Analyze spectrum (on corrected data)
+                    # Analyze
                     result = analyze_spectrum(wl, counts_corrected)
                     
-                    # Individual plot
+                    # Plot
                     if show_individual:
-                        fig = create_spectrum_plot(wl, counts_raw, counts_corrected, result, filename, nd_value)
+                        fig = create_spectrum_plot(wl, counts_raw, counts_corrected, result, 
+                                                  filename, nd_value, energy_mean, energy_std)
                         st.plotly_chart(fig, use_container_width=True)
                         
-                        # Download button for individual plot
                         if KALEIDO_AVAILABLE:
                             col1, col2 = st.columns([3, 1])
                             with col2:
                                 try:
                                     img_bytes = fig_to_image(fig, image_format, image_width, image_height, image_scale)
                                     st.download_button(
-                                        label=f"📥 {image_format.upper()}",
-                                        data=img_bytes,
-                                        file_name=f"{filename.replace('.asc', '')}.{image_format}",
-                                        mime=f"image/{image_format}",
-                                        key=f"download_{idx}"
+                                        f"📥 {image_format.upper()}",
+                                        img_bytes,
+                                        f"{filename.replace('.asc', '')}.{image_format}",
+                                        f"image/{image_format}",
+                                        key=f"dl_{idx}"
                                     )
-                                    
                                     if img_buffer:
                                         img_buffer.writestr(f"{filename.replace('.asc', '')}.{image_format}", img_bytes)
                                 except Exception as e:
-                                    st.error(f"Image export failed: {e}")
+                                    st.error(f"Export failed: {e}")
                         
-                        # Fit parameters
-                        if show_fit_params and result.fit_params and result.fit_success:
-                            with st.expander(f"🔍 Detailed Fit Parameters - {filename}"):
-                                col1, col2, col3, col4, col5 = st.columns(5)
-                                col1.metric("Amplitude", f"{result.fit_params.get('Amplitude', 0):.1f}")
-                                col2.metric("Center (nm)", f"{result.fit_params.get('Center', 0):.2f}")
-                                col3.metric("Gamma", f"{result.fit_params.get('Gamma', 0):.2f}")
-                                col4.metric("Baseline", f"{result.fit_params.get('Baseline', 0):.1f}")
-                                col5.metric("ND Filter", f"{nd_value:.1f}" if nd_value > 0 else "None")
+                        if show_fit_params and result.fit_success:
+                            with st.expander(f"🔍 Parameters - {filename}"):
+                                c1, c2, c3, c4, c5 = st.columns(5)
+                                c1.metric("Amp", f"{result.fit_params.get('Amplitude', 0):.1f}")
+                                c2.metric("Center", f"{result.fit_params.get('Center', 0):.2f}")
+                                c3.metric("Gamma", f"{result.fit_params.get('Gamma', 0):.2f}")
+                                c4.metric("ND", f"{nd_value:.1f}" if nd_value > 0 else "None")
+                                if not np.isnan(energy_mean):
+                                    c5.metric("E (mJ)", f"{energy_mean:.3f}")
                         
-                        # Save HTML to ZIP
                         html = fig.to_html(full_html=False, include_plotlyjs='cdn').encode()
                         html_buffer.writestr(f"{filename.replace('.asc', '')}.html", html)
-                        
-                        # Store figure
-                        all_figures[filename] = fig
                     
-                    # Combined plot (use corrected data)
+                    # Combined
                     label = f"QS={qs:.0f}" if not np.isnan(qs) else filename
+                    if not np.isnan(energy_mean):
+                        label += f" ({energy_mean:.2f}mJ)"
                     if nd_value > 0:
-                        label += f" (ND={nd_value})"
+                        label += f" [ND{nd_value}]"
                     
                     combined_fig.add_trace(go.Scatter(
                         x=wl, y=counts_corrected,
                         mode='lines',
-                        name=label,
-                        hovertemplate='%{y:.0f}<extra></extra>'
+                        name=label
                     ))
                     
-                    # Add to summary
+                    # Summary
                     summary_data.append({
                         "File": filename,
                         "QS Level": qs,
+                        "Pump Energy (mJ)": energy_mean,
+                        "Energy Std (mJ)": energy_std,
                         "ND Filter": nd_value,
                         "Correction Factor": 10**nd_value if nd_value > 0 else 1,
                         "Peak λ (nm)": result.peak_wavelength,
@@ -788,7 +900,7 @@ if uploaded_files:
                     })
                     
                 except Exception as e:
-                    st.error(f"❌ Error processing {filename}: {e}")
+                    st.error(f"Error: {filename}: {e}")
                     continue
                 
                 progress_bar.progress((idx + 1) / len(uploaded_files))
@@ -797,281 +909,213 @@ if uploaded_files:
             if img_buffer:
                 img_buffer.close()
     
-    status.success("✅ All files processed successfully!")
+    status.success("✅ Processing complete!")
     progress_bar.empty()
     
     # ==============================================================
-    # RESULTS SECTION
+    # RESULTS
     # ==============================================================
     
     st.markdown("---")
-    
-    # Summary Statistics
     st.subheader("📊 Summary Statistics")
+    
+    summary_df = pd.DataFrame(summary_data)
+    if 'Pump Energy (mJ)' in summary_df.columns and summary_df['Pump Energy (mJ)'].notna().any():
+        summary_df = summary_df.sort_values("Pump Energy (mJ)")
+    else:
+        summary_df = summary_df.sort_values("QS Level")
+    
     col1, col2, col3, col4, col5 = st.columns(5)
+    col1.metric("Files", len(summary_df))
+    col2.metric("Avg R²", f"{summary_df['R²'].mean():.3f}")
+    col3.metric("Avg FWHM", f"{summary_df['FWHM (nm)'].mean():.2f} nm")
+    col4.metric("ND Corrected", summary_df[summary_df["ND Filter"] > 0].shape[0])
+    col5.metric("Energy Cal.", summary_df[summary_df["Pump Energy (mJ)"].notna()].shape[0])
     
-    summary_df = pd.DataFrame(summary_data).sort_values("QS Level")
-    
-    with col1:
-        st.metric("Files Analyzed", len(summary_df))
-    with col2:
-        avg_r2 = summary_df["R²"].mean()
-        st.metric("Avg R²", f"{avg_r2:.3f}")
-    with col3:
-        avg_fwhm = summary_df["FWHM (nm)"].mean()
-        st.metric("Avg FWHM", f"{avg_fwhm:.2f} nm")
-    with col4:
-        avg_snr = summary_df["SNR"].mean()
-        st.metric("Avg SNR", f"{avg_snr:.1f}")
-    with col5:
-        nd_files = summary_df[summary_df["ND Filter"] > 0].shape[0]
-        st.metric("ND Corrected", f"{nd_files} files")
-    
-    # ND Correction Info Box
-    if nd_files > 0:
-        st.markdown("""
-        <div class="nd-correction-box">
-        <b>🔧 ND Filter Corrections Applied:</b><br>
-        """, unsafe_allow_html=True)
-        for _, row in summary_df[summary_df["ND Filter"] > 0].iterrows():
-            st.markdown(f"• **{row['File']}**: ND={row['ND Filter']:.1f} (×{row['Correction Factor']:.0f} correction)")
-        st.markdown("</div>", unsafe_allow_html=True)
-    
-    # Combined Spectra
+    # Combined plot
     st.markdown("---")
-    st.subheader("🌈 Combined Spectra (ND-Corrected)")
+    st.subheader("🌈 Combined Spectra")
     combined_fig.update_layout(
-        title="Spectral Evolution with Q-Switch Level",
+        title="Spectral Evolution",
         xaxis_title="Wavelength (nm)",
-        yaxis_title="Intensity (counts, ND-corrected)",
+        yaxis_title="Intensity (ND-corrected)",
         template="plotly_white",
-        hovermode="x unified",
         height=600
     )
     st.plotly_chart(combined_fig, use_container_width=True)
     
-    # Download button for combined plot
     if KALEIDO_AVAILABLE:
         col1, col2, col3 = st.columns([2, 1, 2])
         with col2:
             try:
-                combined_img = fig_to_image(combined_fig, image_format, image_width, image_height, image_scale)
+                img = fig_to_image(combined_fig, image_format, image_width, image_height, image_scale)
                 st.download_button(
-                    label=f"📥 Combined Plot ({image_format.upper()})",
-                    data=combined_img,
-                    file_name=f"combined_spectra.{image_format}",
-                    mime=f"image/{image_format}"
+                    f"📥 Combined ({image_format.upper()})",
+                    img,
+                    f"combined.{image_format}",
+                    f"image/{image_format}"
                 )
-            except Exception as e:
-                st.error(f"Combined plot export failed: {e}")
+            except:
+                pass
     
-    # Data Table
+    # Data table
     st.markdown("---")
-    st.subheader("📋 Analysis Results")
+    st.subheader("📋 Results Table")
     
-    # Format and color-code table
-    def highlight_quality(val):
-        if pd.isna(val):
-            return ''
-        if val > 0.95:
-            return 'background-color: #d4edda'
-        elif val > 0.85:
-            return 'background-color: #fff3cd'
-        else:
-            return 'background-color: #f8d7da'
+    def highlight_r2(val):
+        if pd.isna(val): return ''
+        if val > 0.95: return 'background-color: #d4edda'
+        if val > 0.85: return 'background-color: #fff3cd'
+        return 'background-color: #f8d7da'
     
-    def highlight_nd(val):
-        if pd.isna(val) or val == 0:
-            return ''
-        return 'background-color: #ffe4b5'
-    
-    styled_df = summary_df.style.applymap(
-        highlight_quality,
-        subset=['R²']
-    ).applymap(
-        highlight_nd,
-        subset=['ND Filter']
-    ).format({
+    styled = summary_df.style.applymap(highlight_r2, subset=['R²']).format({
         'Peak λ (nm)': '{:.2f}',
         'Peak Intensity': '{:.0f}',
         'FWHM (nm)': '{:.2f}',
         'Integrated Intensity': '{:.2e}',
         'R²': '{:.4f}',
         'SNR': '{:.1f}',
-        'QS Level': '{:.0f}',
-        'ND Filter': '{:.1f}',
-        'Correction Factor': '{:.0f}'
+        'QS Level': lambda x: f'{x:.0f}' if not pd.isna(x) else '',
+        'Pump Energy (mJ)': lambda x: f'{x:.4f}' if not pd.isna(x) else '',
+        'Energy Std (mJ)': lambda x: f'{x:.4f}' if not pd.isna(x) else '',
+        'ND Filter': lambda x: f'{x:.1f}' if x > 0 else ''
     })
     
-    st.dataframe(styled_df, use_container_width=True)
+    st.dataframe(styled, use_container_width=True)
     
-    # Threshold Analysis
-    threshold_fig = None
-    if summary_df['QS Level'].notna().sum() > 3:
+    # Threshold
+    use_energy = 'Pump Energy (mJ)' in summary_df.columns and summary_df['Pump Energy (mJ)'].notna().sum() > 3
+    
+    if use_energy or summary_df['QS Level'].notna().sum() > 3:
         st.markdown("---")
-        st.subheader("🎯 Threshold Detection (ND-Corrected Data)")
+        st.subheader("🎯 Threshold Detection")
         
-        valid = summary_df.dropna(subset=['QS Level', 'Integrated Intensity'])
-        threshold = detect_threshold(
-            valid['QS Level'].values,
-            valid['Integrated Intensity'].values
-        )
+        if use_energy:
+            valid = summary_df.dropna(subset=['Pump Energy (mJ)', 'Integrated Intensity'])
+            threshold = detect_threshold(
+                valid['Pump Energy (mJ)'].values,
+                valid['Integrated Intensity'].values
+            )
+        else:
+            valid = summary_df.dropna(subset=['QS Level', 'Integrated Intensity'])
+            threshold = detect_threshold(
+                valid['QS Level'].values,
+                valid['Integrated Intensity'].values
+            )
         
-        # Display threshold results
         col1, col2, col3 = st.columns(3)
         with col1:
             if threshold.threshold_found:
-                st.success(f"✅ Threshold detected at QS ≈ **{threshold.threshold_qs:.1f}**")
+                if use_energy:
+                    st.success(f"✅ Threshold: **{threshold.threshold_energy:.4f} mJ**")
+                else:
+                    st.success(f"✅ Threshold: QS **{threshold.threshold_qs:.1f}**")
             else:
-                st.warning("⚠️ No clear threshold detected")
+                st.warning("⚠️ No threshold detected")
         with col2:
             st.metric("Slope (below)", f"{threshold.slope_below:.2e}")
         with col3:
             st.metric("Slope (above)", f"{threshold.slope_above:.2e}")
         
-        # Threshold plots
-        threshold_fig = create_threshold_plot(summary_df, threshold)
+        threshold_fig = create_threshold_plot(summary_df, threshold, use_energy)
         st.plotly_chart(threshold_fig, use_container_width=True)
         
-        # Download button for threshold plot
         if KALEIDO_AVAILABLE:
             col1, col2, col3 = st.columns([2, 1, 2])
             with col2:
                 try:
-                    threshold_img = fig_to_image(
-                        threshold_fig, 
-                        image_format, 
-                        int(image_width * 1.5), 
-                        int(image_height * 1.2), 
-                        image_scale
-                    )
+                    img = fig_to_image(threshold_fig, image_format, int(image_width*1.5), int(image_height*1.2), image_scale)
                     st.download_button(
-                        label=f"📥 Threshold Plot ({image_format.upper()})",
-                        data=threshold_img,
-                        file_name=f"threshold_analysis.{image_format}",
-                        mime=f"image/{image_format}"
+                        f"📥 Threshold ({image_format.upper()})",
+                        img,
+                        f"threshold.{image_format}",
+                        f"image/{image_format}"
                     )
-                except Exception as e:
-                    st.error(f"Threshold plot export failed: {e}")
+                except:
+                    pass
     
-    # ==============================================================
-    # DOWNLOADS
-    # ==============================================================
+    # Downloads
     st.markdown("---")
-    st.subheader("💾 Export Results")
+    st.subheader("💾 Export All Results")
     
-    if KALEIDO_AVAILABLE:
-        col1, col2, col3, col4 = st.columns(4)
-    else:
-        col1, col2, col3 = st.columns(3)
+    cols = st.columns(4 if KALEIDO_AVAILABLE else 3)
     
-    with col1:
-        csv_data = summary_df.to_csv(index=False).encode()
+    with cols[0]:
+        csv = summary_df.to_csv(index=False).encode()
         st.download_button(
-            "📥 CSV Data",
-            csv_data,
-            f"laser_analysis_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+            "📥 CSV",
+            csv,
+            f"results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
             "text/csv",
             use_container_width=True
         )
     
-    with col2:
+    with cols[1]:
         st.download_button(
             "📦 HTML Plots",
             plot_zip.getvalue(),
-            f"plots_html_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip",
+            f"plots_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip",
             "application/zip",
             use_container_width=True
         )
     
-    with col3:
-        # Excel export with formatting
+    with cols[2]:
         excel_buffer = BytesIO()
         with pd.ExcelWriter(excel_buffer, engine='xlsxwriter') as writer:
             summary_df.to_excel(writer, sheet_name='Results', index=False)
+            if energy_map:
+                energy_cal_df = pd.DataFrame([
+                    {'QS': qs, 'Mean (mJ)': d['mean'], 'Std (mJ)': d['std'], 'N': d['n_readings']}
+                    for qs, d in energy_map.items()
+                ]).sort_values('QS')
+                energy_cal_df.to_excel(writer, sheet_name='Energy Cal', index=False)
         
         st.download_button(
             "📊 Excel",
             excel_buffer.getvalue(),
-            f"analysis_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+            f"results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
             "application/vnd.ms-excel",
             use_container_width=True
         )
     
     if KALEIDO_AVAILABLE and image_zip:
-        with col4:
+        with cols[3]:
             st.download_button(
-                f"🖼️ All Images ({image_format.upper()})",
+                f"🖼️ Images ({image_format.upper()})",
                 image_zip.getvalue(),
-                f"plots_{image_format}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip",
+                f"images_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip",
                 "application/zip",
                 use_container_width=True
             )
-    
-    st.success("✨ Analysis complete! All visualizations are interactive - hover, zoom, and pan to explore.")
 
 else:
-    # Welcome screen
-    st.info("👆 Upload .asc files to begin analysis")
+    # Welcome
+    st.info("👆 Upload .asc files to begin")
     
-    with st.expander("📖 How to Use"):
+    with st.expander("📖 Instructions"):
         st.markdown("""
-        ### Quick Start Guide
+        ### Quick Start
+        1. Upload .asc spectrum files
+        2. Optionally upload energy calibration file
+        3. View automated analysis
+        4. Download results
         
-        1. **Upload Files**: Select one or more `.asc` spectral files
-        2. **Automatic Analysis**: The app will:
-           - Detect and apply ND filter corrections from filename
-           - Fit Lorentzian curves to each spectrum
-           - Calculate FWHM, peak wavelength, and integrated intensity
-           - Detect lasing threshold (if applicable)
-        3. **Explore Results**: Interactive plots allow zooming and hovering
-        4. **Download**: Export results as CSV, Excel, HTML plots, or high-quality images
+        ### Energy File Format
+        **Transposed Excel/CSV:**
+        - Row 1: `QS_Level | 110 | 120 | 130 | ...`
+        - Rows 2-11: `Energy 1-10` with values
+        - Scientific notation OK (8.21E-06)
+        - Auto-converts J to mJ
         
-        ### ND Filter Correction
-        - Files with "ND" in the name (e.g., `QS150_ND2.asc`) are automatically detected
-        - ND=2 means the filter reduces intensity by 10²=100×
-        - The app multiplies the measured counts by 10^ND to get true intensity
-        - Both raw and corrected data are shown in plots
-        
-        ### Plot Elements
-        - **Gray line**: Raw data (before ND correction)
-        - **Blue solid line**: ND-corrected experimental data
-        - **Red dashed line**: Lorentzian curve fit
-        - **Green dotted vertical line**: Peak wavelength position
-        - **Orange diamond markers**: FWHM boundaries
-        
-        ### File Naming Convention
-        For automatic detection, include values in filename:
-        - Q-switch: `sample_qs_100.asc` or `QS150.asc`
-        - ND filter: `QS150_ND2.asc` or `ND=3.5_QS150.asc`
-        - Both: `QS150_ND2.asc`
-        
-        ### Export Options
-        - **Individual plots**: Download each plot using the button next to it
-        - **Combined plots**: Download all spectra overlaid
-        - **Bulk export**: Download all plots as ZIP
-        - **Data tables**: Export as CSV or Excel with all metrics
-        """)
-    
-    with st.expander("📊 Example Data Format"):
-        st.code("""
-# .asc file format (tab-separated):
-Wavelength    Intensity1    Intensity2    Intensity3
-550.00        1200          1205          1198
-550.50        1350          1348          1352
-551.00        1500          1502          1498
-...
-
-# Filename examples:
-QS100.asc         # Q-switch = 100, no ND filter
-QS150_ND2.asc     # Q-switch = 150, ND = 2 (×100 correction)
-ND=3_QS200.asc    # Q-switch = 200, ND = 3 (×1000 correction)
+        ### File Naming
+        - QS: `QS150.asc` or `sample_qs_100.asc`
+        - ND: `QS150_ND2.asc` (intensity ×100)
         """)
 
 # Footer
 st.markdown("---")
-st.markdown(f"""
-<div style='text-align: center; color: #666; font-size: 0.9em;'>
-        📧 Questions? Email varun.solanki@fau.de
+st.markdown("""
+<div style='text-align: center; color: #666;'>
+📧 varun.solanki@fau.de
 </div>
 """, unsafe_allow_html=True)
