@@ -486,7 +486,9 @@ def create_spectrum_plot(wl: np.ndarray, counts_raw: np.ndarray, counts_correcte
     return fig
 
 def create_threshold_plot(df: pd.DataFrame, threshold: ThresholdAnalysis, use_energy: bool = True) -> go.Figure:
-    """Create threshold analysis with UNIFORM Y-AXIS SCALING"""
+    """Create threshold analysis with UNIFORM Y-AXIS SCALING and SMOOTH CURVES"""
+    from scipy.interpolate import make_interp_spline
+    
     x_col = 'Pump Energy (mJ)' if use_energy and 'Pump Energy (mJ)' in df.columns else 'QS Level'
     x_label = "Pump Energy (mJ)" if use_energy else "Q-Switch Level"
     
@@ -504,6 +506,10 @@ def create_threshold_plot(df: pd.DataFrame, threshold: ThresholdAnalysis, use_en
     
     valid = df.dropna(subset=[x_col])
     x_values = valid[x_col].values
+    
+    # Sort by x values
+    sort_idx = np.argsort(x_values)
+    x_sorted = x_values[sort_idx]
     
     # Calculate uniform y-ranges
     int_min = valid['Integrated Intensity'].min()
@@ -526,81 +532,190 @@ def create_threshold_plot(df: pd.DataFrame, threshold: ThresholdAnalysis, use_en
     wl_padding = max((wl_max - wl_min) * 0.1, 2)
     wl_range = [wl_min - wl_padding, wl_max + wl_padding]
     
+    # Helper function to create smooth curve
+    def create_smooth_curve(x, y, num_points=300):
+        """Create smooth curve using spline interpolation"""
+        if len(x) < 4:
+            # Not enough points for spline, return original
+            return x, y
+        
+        try:
+            # Create spline interpolation
+            spline = make_interp_spline(x, y, k=min(3, len(x)-1))
+            x_smooth = np.linspace(x.min(), x.max(), num_points)
+            y_smooth = spline(x_smooth)
+            return x_smooth, y_smooth
+        except:
+            # Fallback to original if spline fails
+            return x, y
+    
+    # ============================================================
     # Plot 1: Integrated Intensity
+    # ============================================================
+    y_int = valid['Integrated Intensity'].values[sort_idx]
+    
+    # Smooth curve
+    x_smooth, y_smooth = create_smooth_curve(x_sorted, y_int)
     fig.add_trace(
         go.Scatter(
-            x=x_values, y=valid['Integrated Intensity'],
-            mode='lines+markers',
-            marker=dict(size=10, color='red'),
-            line=dict(width=3),
-            error_x=dict(
-                type='data',
-                array=valid['Energy Std (mJ)'].values if 'Energy Std (mJ)' in valid.columns else None,
-                visible=True if 'Energy Std (mJ)' in valid.columns else False
-            )
+            x=x_smooth, 
+            y=y_smooth,
+            mode='lines',
+            line=dict(width=3, color='red', shape='spline'),
+            name='Integrated Intensity',
+            showlegend=False
         ),
         row=1, col=1
     )
     
+    # Original data points as markers
+    fig.add_trace(
+        go.Scatter(
+            x=x_sorted, 
+            y=y_int,
+            mode='markers',
+            marker=dict(size=10, color='red', symbol='circle', line=dict(width=2, color='white')),
+            error_x=dict(
+                type='data',
+                array=valid['Energy Std (mJ)'].values[sort_idx] if 'Energy Std (mJ)' in valid.columns else None,
+                visible=True if 'Energy Std (mJ)' in valid.columns else False,
+                thickness=1.5,
+                width=4
+            ),
+            showlegend=False
+        ),
+        row=1, col=1
+    )
+    
+    # Threshold line
     if threshold.threshold_found and threshold.threshold_energy:
         fig.add_vline(
             x=threshold.threshold_energy,
             line_dash="dash",
             line_color="green",
             line_width=2,
-            annotation_text=f"Threshold: {threshold.threshold_energy:.3f} mJ",
+            annotation_text=f"Threshold: {threshold.threshold_energy:.4f} mJ",
+            annotation_position="top",
             row=1, col=1
         )
     
+    # ============================================================
     # Plot 2: FWHM
+    # ============================================================
+    y_fwhm = valid['FWHM (nm)'].values[sort_idx]
+    
+    # Smooth curve
+    x_smooth, y_smooth = create_smooth_curve(x_sorted, y_fwhm)
     fig.add_trace(
         go.Scatter(
-            x=x_values, y=valid['FWHM (nm)'],
-            mode='lines+markers',
-            marker=dict(size=10, color='blue'),
-            line=dict(width=3),
-            error_x=dict(
-                type='data',
-                array=valid['Energy Std (mJ)'].values if 'Energy Std (mJ)' in valid.columns else None,
-                visible=True if 'Energy Std (mJ)' in valid.columns else False
-            )
+            x=x_smooth, 
+            y=y_smooth,
+            mode='lines',
+            line=dict(width=3, color='blue', shape='spline'),
+            name='FWHM',
+            showlegend=False
         ),
         row=1, col=2
     )
     
-    # Plot 3: Peak Wavelength
+    # Data points
     fig.add_trace(
         go.Scatter(
-            x=x_values, y=valid['Peak λ (nm)'],
-            mode='lines+markers',
-            marker=dict(size=10, color='purple'),
-            line=dict(width=3),
+            x=x_sorted, 
+            y=y_fwhm,
+            mode='markers',
+            marker=dict(size=10, color='blue', symbol='circle', line=dict(width=2, color='white')),
             error_x=dict(
                 type='data',
-                array=valid['Energy Std (mJ)'].values if 'Energy Std (mJ)' in valid.columns else None,
-                visible=True if 'Energy Std (mJ)' in valid.columns else False
-            )
+                array=valid['Energy Std (mJ)'].values[sort_idx] if 'Energy Std (mJ)' in valid.columns else None,
+                visible=True if 'Energy Std (mJ)' in valid.columns else False,
+                thickness=1.5,
+                width=4
+            ),
+            showlegend=False
+        ),
+        row=1, col=2
+    )
+    
+    # ============================================================
+    # Plot 3: Peak Wavelength
+    # ============================================================
+    y_wl = valid['Peak λ (nm)'].values[sort_idx]
+    
+    # Smooth curve
+    x_smooth, y_smooth = create_smooth_curve(x_sorted, y_wl)
+    fig.add_trace(
+        go.Scatter(
+            x=x_smooth, 
+            y=y_smooth,
+            mode='lines',
+            line=dict(width=3, color='purple', shape='spline'),
+            name='Peak Wavelength',
+            showlegend=False
         ),
         row=2, col=1
     )
     
-    # Plot 4: Peak Intensity
+    # Data points
     fig.add_trace(
         go.Scatter(
-            x=x_values, y=valid['Peak Intensity'],
-            mode='lines+markers',
-            marker=dict(size=10, color='orange'),
-            line=dict(width=3),
+            x=x_sorted, 
+            y=y_wl,
+            mode='markers',
+            marker=dict(size=10, color='purple', symbol='circle', line=dict(width=2, color='white')),
             error_x=dict(
                 type='data',
-                array=valid['Energy Std (mJ)'].values if 'Energy Std (mJ)' in valid.columns else None,
-                visible=True if 'Energy Std (mJ)' in valid.columns else False
-            )
+                array=valid['Energy Std (mJ)'].values[sort_idx] if 'Energy Std (mJ)' in valid.columns else None,
+                visible=True if 'Energy Std (mJ)' in valid.columns else False,
+                thickness=1.5,
+                width=4
+            ),
+            showlegend=False
+        ),
+        row=2, col=1
+    )
+    
+    # ============================================================
+    # Plot 4: Peak Intensity
+    # ============================================================
+    y_peak = valid['Peak Intensity'].values[sort_idx]
+    
+    # Smooth curve
+    x_smooth, y_smooth = create_smooth_curve(x_sorted, y_peak)
+    fig.add_trace(
+        go.Scatter(
+            x=x_smooth, 
+            y=y_smooth,
+            mode='lines',
+            line=dict(width=3, color='orange', shape='spline'),
+            name='Peak Intensity',
+            showlegend=False
         ),
         row=2, col=2
     )
     
-    # Apply uniform ranges
+    # Data points
+    fig.add_trace(
+        go.Scatter(
+            x=x_sorted, 
+            y=y_peak,
+            mode='markers',
+            marker=dict(size=10, color='orange', symbol='circle', line=dict(width=2, color='white')),
+            error_x=dict(
+                type='data',
+                array=valid['Energy Std (mJ)'].values[sort_idx] if 'Energy Std (mJ)' in valid.columns else None,
+                visible=True if 'Energy Std (mJ)' in valid.columns else False,
+                thickness=1.5,
+                width=4
+            ),
+            showlegend=False
+        ),
+        row=2, col=2
+    )
+    
+    # ============================================================
+    # Update axes with uniform ranges
+    # ============================================================
     for row in [1, 2]:
         for col in [1, 2]:
             fig.update_xaxes(title_text=x_label, row=row, col=col)
@@ -610,6 +725,12 @@ def create_threshold_plot(df: pd.DataFrame, threshold: ThresholdAnalysis, use_en
     fig.update_yaxes(title_text="Wavelength (nm)", range=wl_range, row=2, col=1)
     fig.update_yaxes(title_text="Counts", range=peak_range, row=2, col=2)
     
+    # Optional: log scale for large ranges
+    if int_max > 0 and int_min > 0 and (int_max / int_min) > 1000:
+        fig.update_yaxes(type="log", row=1, col=1)
+    if peak_max > 0 and peak_min > 0 and (peak_max / peak_min) > 1000:
+        fig.update_yaxes(type="log", row=2, col=2)
+    
     fig.update_layout(
         height=700,
         showlegend=False,
@@ -618,7 +739,6 @@ def create_threshold_plot(df: pd.DataFrame, threshold: ThresholdAnalysis, use_en
     )
     
     return fig
-
 # ==============================================================
 # IMAGE EXPORT
 # ==============================================================
@@ -1119,3 +1239,4 @@ st.markdown("""
 📧 varun.solanki@fau.de
 </div>
 """, unsafe_allow_html=True)
+
