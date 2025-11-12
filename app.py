@@ -1,5 +1,5 @@
 # ==============================================================
-# Streamlit App: Random Laser ASC Analyzer
+# Streamlit App: Random Laser ASC Analyzer with ND Correction
 # ==============================================================
 import streamlit as st
 import pandas as pd
@@ -15,21 +15,6 @@ from typing import Tuple, Optional, List, Dict
 import re
 from datetime import datetime
 
-# ==============================================================
-# HEADER WITH FAU LOGO
-# ==============================================================
-def add_logo_and_header():
-    """Add FAU logo and professional header"""
-    
-    # FAU Logo - REPLACE THIS URL WITH YOUR LOGO
-    logo_html = """
-    <div class="logo-container">
-        <img src="https://www.google.com/imgres?q=lpt%20fau%20erlangen&imgurl=https%3A%2F%2Fwww.lpt.tf.fau.de%2Ffiles%2F2017%2F05%2Fcropped-LPT_Logo_transparent.png&imgrefurl=https%3A%2F%2Fwww.lpt.tf.fau.de%2F&docid=xzc27-vqcX1qTM&tbnid=dU3d5LcC72rxwM&vet=12ahUKEwjI5fS9tdOQAxUKcPEDHYkeD9MQM3oECBkQAA..i&w=1500&h=519&hcb=2&ved=2ahUKEwjI5fS9tdOQAxUKcPEDHYkeD9MQM3oECBkQAA" 
-             alt="FAU Logo" 
-             style="height: 120px; margin-bottom: 1rem;">
-    </div>
-    """
-    st.markdown(logo_html, unsafe_allow_html=True)
 # Check for kaleido installation
 try:
     import plotly.io as pio
@@ -81,6 +66,60 @@ def calculate_snr(signal: np.ndarray, noise_percentile: int = 10) -> float:
     peak = np.max(signal)
     return peak / noise if noise > 0 else np.inf
 
+# ==============================================================
+# ND FILTER FUNCTIONS
+# ==============================================================
+def extract_nd(filename: str) -> float:
+    """
+    Extract Neutral Density (ND) filter value from filename
+    
+    Parameters:
+    -----------
+    filename : str
+        Name of the file (e.g., "QS150_ND2.asc" or "ND=3_QS150.asc")
+    
+    Returns:
+    --------
+    float : ND filter value, or 0 if no ND filter mentioned
+    
+    Examples:
+    ---------
+    "QS150_ND2.asc" -> 2.0
+    "ND=3.5_QS150.asc" -> 3.5
+    "QS150.asc" -> 0.0
+    """
+    # Search for pattern "ND" followed by optional "=" or "_" then a number
+    match = re.search(r'ND[=_\s-]*(\d+\.?\d*)', filename, re.IGNORECASE)
+    
+    if match:
+        return float(match.group(1))
+    else:
+        return 0.0
+
+def apply_nd_correction(counts: np.ndarray, nd_value: float) -> np.ndarray:
+    """
+    Apply Neutral Density filter correction to intensity counts
+    
+    ND filters reduce intensity by 10^(-ND) 
+    To correct: multiply measured intensity by 10^(ND_value)
+    
+    Parameters:
+    -----------
+    counts : numpy array
+        Measured intensity counts
+    nd_value : float
+        ND filter value (optical density)
+    
+    Returns:
+    --------
+    numpy array : Corrected intensity counts
+    """
+    if nd_value == 0:
+        return counts
+    
+    correction_factor = 10 ** nd_value
+    return counts * correction_factor
+
 @st.cache_data
 def analyze_spectrum(wl: np.ndarray, counts: np.ndarray) -> FitResult:
     """
@@ -88,7 +127,7 @@ def analyze_spectrum(wl: np.ndarray, counts: np.ndarray) -> FitResult:
     
     Args:
         wl: Wavelength array (nm)
-        counts: Intensity array
+        counts: Intensity array (already ND-corrected if applicable)
     
     Returns:
         FitResult object with all metrics
@@ -120,8 +159,8 @@ def analyze_spectrum(wl: np.ndarray, counts: np.ndarray) -> FitResult:
         
         # Simple, guaranteed valid bounds - VERY WIDE
         bounds = (
-            [0, wl.min(), 0, -np.inf],  # Lower bounds - very permissive
-            [np.inf, wl.max(), np.inf, np.inf]  # Upper bounds - very permissive
+            [0, wl.min(), 0, -np.inf],  # Lower bounds
+            [np.inf, wl.max(), np.inf, np.inf]  # Upper bounds
         )
         
         p0 = [A_init, x0_init, gamma_init, y0_init]
@@ -132,10 +171,10 @@ def analyze_spectrum(wl: np.ndarray, counts: np.ndarray) -> FitResult:
                 lorentzian, wl, counts,
                 p0=p0,
                 maxfev=50000,
-                method='lm'  # Levenberg-Marquardt - no bounds but very robust
+                method='lm'  # Levenberg-Marquardt
             )
         except:
-            # If unbounded fit fails, try with bounds using trf method
+            # If unbounded fit fails, try with bounds
             popt, pcov = curve_fit(
                 lorentzian, wl, counts,
                 p0=p0,
@@ -303,19 +342,7 @@ def parse_asc_file(file_content: str, skip_rows: int) -> Tuple[np.ndarray, np.nd
 # IMAGE EXPORT FUNCTION
 # ==============================================================
 def fig_to_image(fig: go.Figure, format: str, width: int, height: int, scale: int) -> bytes:
-    """
-    Convert plotly figure to image bytes
-    
-    Args:
-        fig: Plotly figure object
-        format: Image format (png, jpeg, svg, pdf)
-        width: Image width in pixels
-        height: Image height in pixels
-        scale: Image scale/quality
-    
-    Returns:
-        Image bytes
-    """
+    """Convert plotly figure to image bytes"""
     try:
         img_bytes = fig.to_image(
             format=format,
@@ -333,16 +360,27 @@ def fig_to_image(fig: go.Figure, format: str, width: int, height: int, scale: in
 # ==============================================================
 # VISUALIZATION FUNCTIONS
 # ==============================================================
-def create_spectrum_plot(wl: np.ndarray, counts: np.ndarray, 
-                        fit_result: FitResult, filename: str) -> go.Figure:
-    """Create interactive spectrum plot with fit overlay"""
+def create_spectrum_plot(wl: np.ndarray, counts_raw: np.ndarray, counts_corrected: np.ndarray,
+                        fit_result: FitResult, filename: str, nd_value: float) -> go.Figure:
+    """Create interactive spectrum plot with fit overlay and ND correction visualization"""
     fig = go.Figure()
     
-    # Raw data - solid line (blue)
+    # Show raw data if ND correction was applied
+    if nd_value > 0:
+        fig.add_trace(go.Scatter(
+            x=wl, y=counts_raw,
+            mode='lines',
+            name='Raw Data (before ND correction)',
+            line=dict(color='lightgray', width=2),
+            opacity=0.5,
+            hovertemplate='Raw: %{y:.0f}<extra></extra>'
+        ))
+    
+    # Corrected data - solid line (blue)
     fig.add_trace(go.Scatter(
-        x=wl, y=counts,
+        x=wl, y=counts_corrected,
         mode='lines',
-        name='Experimental Data',
+        name='ND-Corrected Data' if nd_value > 0 else 'Experimental Data',
         line=dict(color='#2E86AB', width=3),
         hovertemplate='λ: %{x:.2f} nm<br>I: %{y:.0f}<extra></extra>'
     ))
@@ -394,6 +432,8 @@ def create_spectrum_plot(wl: np.ndarray, counts: np.ndarray,
     
     # Layout
     title_html = f"<b>{filename}</b><br>"
+    if nd_value > 0:
+        title_html += f"<sub>ND Filter: {nd_value:.1f} (×{10**nd_value:.0f} correction applied)</sub><br>"
     if fit_result.fit_success:
         title_html += f"<sub>Peak: {fit_result.peak_wavelength:.2f} nm | "
         title_html += f"FWHM: {fit_result.fwhm:.2f} nm | "
@@ -510,7 +550,7 @@ def create_threshold_plot(df: pd.DataFrame, threshold: ThresholdAnalysis) -> go.
         height=700,
         showlegend=False,
         template="plotly_white",
-        title_text="<b>Threshold Analysis Dashboard</b>"
+        title_text="<b>Threshold Analysis Dashboard (ND-Corrected)</b>"
     )
     
     return fig
@@ -539,13 +579,20 @@ st.markdown("""
         padding: 10px;
         border-radius: 5px;
     }
+    .nd-correction-box {
+        background-color: #ffe4b5;
+        padding: 10px;
+        border-radius: 5px;
+        border-left: 4px solid #ff8c00;
+        margin: 10px 0;
+    }
 </style>
 """, unsafe_allow_html=True)
 
 # Header
 st.markdown('<p class="main-header">🔬 Random Laser Analyzer</p>', unsafe_allow_html=True)
 st.markdown("""
-Advanced spectral analysis tool with **Lorentzian fitting** and **threshold detection**.
+Advanced spectral analysis tool with **Lorentzian fitting**, **ND filter correction**, and **threshold detection**.
 Upload your `.asc` files to begin automated analysis.
 """)
 
@@ -570,6 +617,8 @@ with st.sidebar:
         skip_rows = st.number_input("Header rows to skip", 0, 100, 38)
         show_individual = st.checkbox("Show individual plots", True)
         show_fit_params = st.checkbox("Show fit parameters", False)
+        apply_nd = st.checkbox("Apply ND filter correction", True, 
+                              help="Automatically detect and correct for ND filters from filename")
     
     # Export settings
     if KALEIDO_AVAILABLE:
@@ -589,17 +638,24 @@ with st.sidebar:
     st.markdown("### 📊 Analysis Features")
     st.markdown("""
     - ✅ Lorentzian curve fitting
+    - ✅ ND filter correction
     - ✅ FWHM & R² calculation
     - ✅ Threshold detection
     - ✅ SNR estimation
     - ✅ Interactive visualizations
     - ✅ Export to CSV/Excel/Images
     
+    ### 🔍 ND Filter Detection
+    Files with ND filters in the name 
+    (e.g., `QS150_ND2.asc`) will have
+    intensity multiplied by 10^ND
+    
     ### 📈 Plot Legend
-    - **Blue solid line**: Experimental data
-    - **Red dashed line**: Lorentzian fit
-    - **Green dotted line**: Peak position
-    - **Orange diamonds**: FWHM boundaries
+    - **Gray line**: Raw data (if ND)
+    - **Blue solid**: Corrected data
+    - **Red dashed**: Lorentzian fit
+    - **Green dotted**: Peak position
+    - **Orange diamonds**: FWHM
     """)
     
     # Kaleido status
@@ -613,7 +669,7 @@ uploaded_files = st.file_uploader(
     "📤 Upload .asc spectrum files",
     accept_multiple_files=True,
     type=['asc'],
-    help="Select multiple files for Q-switch series analysis"
+    help="Select multiple files for Q-switch series analysis. ND filters will be detected from filename."
 )
 
 # ==============================================================
@@ -647,23 +703,32 @@ if uploaded_files:
                 try:
                     # Parse file
                     content = file.read().decode(errors='ignore')
-                    wl, counts = parse_asc_file(content, skip_rows)
+                    wl, counts_raw = parse_asc_file(content, skip_rows)
                     
-                    # Analyze spectrum
-                    result = analyze_spectrum(wl, counts)
+                    # Extract metadata
                     qs = extract_qs(filename)
+                    nd_value = extract_nd(filename) if apply_nd else 0.0
+                    
+                    # Apply ND correction if needed
+                    if nd_value > 0:
+                        counts_corrected = apply_nd_correction(counts_raw, nd_value)
+                        st.info(f"🔧 Applied ND={nd_value} correction (×{10**nd_value:.0f}) to {filename}")
+                    else:
+                        counts_corrected = counts_raw.copy()
+                    
+                    # Analyze spectrum (on corrected data)
+                    result = analyze_spectrum(wl, counts_corrected)
                     
                     # Individual plot
                     if show_individual:
-                        fig = create_spectrum_plot(wl, counts, result, filename)
+                        fig = create_spectrum_plot(wl, counts_raw, counts_corrected, result, filename, nd_value)
                         st.plotly_chart(fig, use_container_width=True)
                         
-                        # Download button for individual plot (only if kaleido available)
+                        # Download button for individual plot
                         if KALEIDO_AVAILABLE:
                             col1, col2 = st.columns([3, 1])
                             with col2:
                                 try:
-                                    # Convert figure to image
                                     img_bytes = fig_to_image(fig, image_format, image_width, image_height, image_scale)
                                     st.download_button(
                                         label=f"📥 {image_format.upper()}",
@@ -673,7 +738,6 @@ if uploaded_files:
                                         key=f"download_{idx}"
                                     )
                                     
-                                    # Save image to ZIP
                                     if img_buffer:
                                         img_buffer.writestr(f"{filename.replace('.asc', '')}.{image_format}", img_bytes)
                                 except Exception as e:
@@ -682,11 +746,12 @@ if uploaded_files:
                         # Fit parameters
                         if show_fit_params and result.fit_params and result.fit_success:
                             with st.expander(f"🔍 Detailed Fit Parameters - {filename}"):
-                                col1, col2, col3, col4 = st.columns(4)
+                                col1, col2, col3, col4, col5 = st.columns(5)
                                 col1.metric("Amplitude", f"{result.fit_params.get('Amplitude', 0):.1f}")
                                 col2.metric("Center (nm)", f"{result.fit_params.get('Center', 0):.2f}")
                                 col3.metric("Gamma", f"{result.fit_params.get('Gamma', 0):.2f}")
                                 col4.metric("Baseline", f"{result.fit_params.get('Baseline', 0):.1f}")
+                                col5.metric("ND Filter", f"{nd_value:.1f}" if nd_value > 0 else "None")
                         
                         # Save HTML to ZIP
                         html = fig.to_html(full_html=False, include_plotlyjs='cdn').encode()
@@ -695,11 +760,15 @@ if uploaded_files:
                         # Store figure
                         all_figures[filename] = fig
                     
-                    # Combined plot
+                    # Combined plot (use corrected data)
+                    label = f"QS={qs:.0f}" if not np.isnan(qs) else filename
+                    if nd_value > 0:
+                        label += f" (ND={nd_value})"
+                    
                     combined_fig.add_trace(go.Scatter(
-                        x=wl, y=counts,
+                        x=wl, y=counts_corrected,
                         mode='lines',
-                        name=f"QS={qs:.0f}" if not np.isnan(qs) else filename,
+                        name=label,
                         hovertemplate='%{y:.0f}<extra></extra>'
                     ))
                     
@@ -707,6 +776,8 @@ if uploaded_files:
                     summary_data.append({
                         "File": filename,
                         "QS Level": qs,
+                        "ND Filter": nd_value,
+                        "Correction Factor": 10**nd_value if nd_value > 0 else 1,
                         "Peak λ (nm)": result.peak_wavelength,
                         "Peak Intensity": result.peak_intensity,
                         "FWHM (nm)": result.fwhm,
@@ -737,7 +808,7 @@ if uploaded_files:
     
     # Summary Statistics
     st.subheader("📊 Summary Statistics")
-    col1, col2, col3, col4 = st.columns(4)
+    col1, col2, col3, col4, col5 = st.columns(5)
     
     summary_df = pd.DataFrame(summary_data).sort_values("QS Level")
     
@@ -752,14 +823,27 @@ if uploaded_files:
     with col4:
         avg_snr = summary_df["SNR"].mean()
         st.metric("Avg SNR", f"{avg_snr:.1f}")
+    with col5:
+        nd_files = summary_df[summary_df["ND Filter"] > 0].shape[0]
+        st.metric("ND Corrected", f"{nd_files} files")
+    
+    # ND Correction Info Box
+    if nd_files > 0:
+        st.markdown("""
+        <div class="nd-correction-box">
+        <b>🔧 ND Filter Corrections Applied:</b><br>
+        """, unsafe_allow_html=True)
+        for _, row in summary_df[summary_df["ND Filter"] > 0].iterrows():
+            st.markdown(f"• **{row['File']}**: ND={row['ND Filter']:.1f} (×{row['Correction Factor']:.0f} correction)")
+        st.markdown("</div>", unsafe_allow_html=True)
     
     # Combined Spectra
     st.markdown("---")
-    st.subheader("🌈 Combined Spectra")
+    st.subheader("🌈 Combined Spectra (ND-Corrected)")
     combined_fig.update_layout(
         title="Spectral Evolution with Q-Switch Level",
         xaxis_title="Wavelength (nm)",
-        yaxis_title="Intensity (counts)",
+        yaxis_title="Intensity (counts, ND-corrected)",
         template="plotly_white",
         hovermode="x unified",
         height=600
@@ -796,9 +880,17 @@ if uploaded_files:
         else:
             return 'background-color: #f8d7da'
     
+    def highlight_nd(val):
+        if pd.isna(val) or val == 0:
+            return ''
+        return 'background-color: #ffe4b5'
+    
     styled_df = summary_df.style.applymap(
         highlight_quality,
         subset=['R²']
+    ).applymap(
+        highlight_nd,
+        subset=['ND Filter']
     ).format({
         'Peak λ (nm)': '{:.2f}',
         'Peak Intensity': '{:.0f}',
@@ -806,7 +898,9 @@ if uploaded_files:
         'Integrated Intensity': '{:.2e}',
         'R²': '{:.4f}',
         'SNR': '{:.1f}',
-        'QS Level': '{:.0f}'
+        'QS Level': '{:.0f}',
+        'ND Filter': '{:.1f}',
+        'Correction Factor': '{:.0f}'
     })
     
     st.dataframe(styled_df, use_container_width=True)
@@ -815,7 +909,7 @@ if uploaded_files:
     threshold_fig = None
     if summary_df['QS Level'].notna().sum() > 3:
         st.markdown("---")
-        st.subheader("🎯 Threshold Detection")
+        st.subheader("🎯 Threshold Detection (ND-Corrected Data)")
         
         valid = summary_df.dropna(subset=['QS Level', 'Integrated Intensity'])
         threshold = detect_threshold(
@@ -926,39 +1020,40 @@ else:
         
         1. **Upload Files**: Select one or more `.asc` spectral files
         2. **Automatic Analysis**: The app will:
-           - Fit Lorentzian curves to each spectrum (shown as **red dashed line**)
+           - Detect and apply ND filter corrections from filename
+           - Fit Lorentzian curves to each spectrum
            - Calculate FWHM, peak wavelength, and integrated intensity
            - Detect lasing threshold (if applicable)
         3. **Explore Results**: Interactive plots allow zooming and hovering
         4. **Download**: Export results as CSV, Excel, HTML plots, or high-quality images
         
+        ### ND Filter Correction
+        - Files with "ND" in the name (e.g., `QS150_ND2.asc`) are automatically detected
+        - ND=2 means the filter reduces intensity by 10²=100×
+        - The app multiplies the measured counts by 10^ND to get true intensity
+        - Both raw and corrected data are shown in plots
+        
         ### Plot Elements
-        - **Blue solid line**: Your experimental data
+        - **Gray line**: Raw data (before ND correction)
+        - **Blue solid line**: ND-corrected experimental data
         - **Red dashed line**: Lorentzian curve fit
         - **Green dotted vertical line**: Peak wavelength position
-        - **Orange diamond markers**: FWHM (Full Width at Half Maximum) boundaries
-        
-        ### Export Options
-        - **Individual plots**: Download each plot as image using the button next to it
-        - **Combined plots**: Download the combined spectra view
-        - **Bulk export**: Download all plots as ZIP (HTML or Images)
-        - **Image formats**: PNG, JPEG, SVG, or PDF (requires kaleido)
-        - **Customization**: Adjust image size and quality in sidebar
-        
-        ### Installing Kaleido for Image Export
-        ```bash
-        pip install kaleido
-        ```
-        Then restart the app.
+        - **Orange diamond markers**: FWHM boundaries
         
         ### File Naming Convention
-        For automatic Q-switch detection, include the value in filename:
-        - `sample_qs_100.asc`
-        - `QS150.asc`
-        - `data_200_qs.asc`
+        For automatic detection, include values in filename:
+        - Q-switch: `sample_qs_100.asc` or `QS150.asc`
+        - ND filter: `QS150_ND2.asc` or `ND=3.5_QS150.asc`
+        - Both: `QS150_ND2.asc`
+        
+        ### Export Options
+        - **Individual plots**: Download each plot using the button next to it
+        - **Combined plots**: Download all spectra overlaid
+        - **Bulk export**: Download all plots as ZIP
+        - **Data tables**: Export as CSV or Excel with all metrics
         """)
     
-    with st.expander("📊 Example Data"):
+    with st.expander("📊 Example Data Format"):
         st.code("""
 # .asc file format (tab-separated):
 Wavelength    Intensity1    Intensity2    Intensity3
@@ -966,6 +1061,11 @@ Wavelength    Intensity1    Intensity2    Intensity3
 550.50        1350          1348          1352
 551.00        1500          1502          1498
 ...
+
+# Filename examples:
+QS100.asc         # Q-switch = 100, no ND filter
+QS150_ND2.asc     # Q-switch = 150, ND = 2 (×100 correction)
+ND=3_QS200.asc    # Q-switch = 200, ND = 3 (×1000 correction)
         """)
 
 # Footer
@@ -975,7 +1075,3 @@ st.markdown(f"""
         📧 Questions? Email varun.solanki@fau.de
 </div>
 """, unsafe_allow_html=True)
-
-
-
-
