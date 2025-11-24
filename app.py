@@ -371,128 +371,6 @@ def parse_energy_file(file_content: str, file_type: str, file_bytes: bytes = Non
                 st.dataframe(df.head())
         return {}
 # ==============================================================
-# CORE SPECTRAL ANALYSIS FUNCTIONS
-# ==============================================================
-def lorentzian(x: np.ndarray, A: float, x0: float, gamma: float, y0: float) -> np.ndarray:
-    """Lorentzian lineshape function"""
-    return A * (gamma**2 / ((x - x0)**2 + gamma**2)) + y0
-
-def calculate_r_squared(y_actual: np.ndarray, y_fit: np.ndarray) -> float:
-    """Calculate coefficient of determination (R²)"""
-    ss_res = np.sum((y_actual - y_fit) ** 2)
-    ss_tot = np.sum((y_actual - np.mean(y_actual)) ** 2)
-    return 1 - (ss_res / ss_tot) if ss_tot > 0 else 0
-
-def calculate_snr(signal: np.ndarray, noise_percentile: int = 10) -> float:
-    """Calculate signal-to-noise ratio"""
-    noise = np.percentile(signal, noise_percentile)
-    peak = np.max(signal)
-    return peak / noise if noise > 0 else np.inf
-
-@st.cache_data
-def analyze_spectrum(wl: np.ndarray, counts: np.ndarray) -> FitResult:
-    """Perform Lorentzian fitting and extract spectral parameters"""
-    try:
-        peak_idx = np.argmax(counts)
-        x0_init = wl[peak_idx]
-        baseline_est = np.percentile(counts, 5)
-        A_init = np.max(counts) - baseline_est
-        y0_init = baseline_est
-        
-        half_max = baseline_est + A_init / 2
-        above_half = counts > half_max
-        
-        if np.sum(above_half) > 2:
-            indices = np.where(above_half)[0]
-            width = wl[indices[-1]] - wl[indices[0]]
-            gamma_init = max(width / 2, 0.1)
-        else:
-            gamma_init = (wl.max() - wl.min()) / 10
-        
-        bounds = ([0, wl.min(), 0, -np.inf], [np.inf, wl.max(), np.inf, np.inf])
-        p0 = [A_init, x0_init, gamma_init, y0_init]
-        
-        try:
-            popt, pcov = curve_fit(lorentzian, wl, counts, p0=p0, maxfev=50000, method='lm')
-        except:
-            popt, pcov = curve_fit(lorentzian, wl, counts, p0=p0, bounds=bounds, maxfev=50000, method='trf')
-        
-        A, x0, gamma, y0 = popt
-        A = abs(A)
-        gamma = abs(gamma)
-        
-        fwhm = 2 * gamma
-        fit_y = lorentzian(wl, A, x0, gamma, y0)
-        area = np.trapz(np.maximum(counts - y0, 0), wl)
-        r_squared = calculate_r_squared(counts, fit_y)
-        snr = calculate_snr(counts)
-        
-        if r_squared < 0.3:
-            raise ValueError(f"Poor fit quality: R² = {r_squared:.3f}")
-        
-        fit_params = {
-            'Amplitude': float(A), 'Center': float(x0), 'Gamma': float(gamma),
-            'Baseline': float(y0), 'Std_Errors': [float(x) for x in np.sqrt(np.diag(pcov))]
-        }
-        
-        return FitResult(float(x0), float(A + y0), float(fwhm), float(area), 
-                        fit_y, float(r_squared), float(snr), fit_params, fit_success=True)
-        
-    except Exception as e:
-        peak_idx = np.argmax(counts)
-        peak_wl = wl[peak_idx]
-        peak_int = counts[peak_idx]
-        half_max = (peak_int + np.min(counts)) / 2
-        above_half = counts > half_max
-        
-        if np.sum(above_half) > 2:
-            indices = np.where(above_half)[0]
-            fwhm_estimate = wl[indices[-1]] - wl[indices[0]]
-        else:
-            fwhm_estimate = np.nan
-        
-        return FitResult(float(peak_wl), float(peak_int),
-                        float(fwhm_estimate) if not np.isnan(fwhm_estimate) else np.nan,
-                        float(np.trapz(counts - np.min(counts), wl)),
-                        counts.copy(), 0.0, float(calculate_snr(counts)),
-                        {'error': str(e)}, fit_success=False)
-
-# ==============================================================
-# THRESHOLD DETECTION
-# ==============================================================
-def detect_threshold(x_values: np.ndarray, intensities: np.ndarray, min_points: int = 3) -> ThresholdAnalysis:
-    """Detect lasing threshold using broken-stick algorithm"""
-    if len(x_values) < 2 * min_points:
-        return ThresholdAnalysis(None, None, 0, 0, False)
-    
-    try:
-        idx = np.argsort(x_values)
-        x_sorted = x_values[idx]
-        int_sorted = intensities[idx]
-        
-        best_threshold = None
-        best_r2_sum = -np.inf
-        best_slopes = (0, 0)
-        
-        for i in range(min_points, len(x_sorted) - min_points):
-            below = np.polyfit(x_sorted[:i], int_sorted[:i], 1)
-            above = np.polyfit(x_sorted[i:], int_sorted[i:], 1)
-            
-            r2_below = calculate_r_squared(int_sorted[:i], np.polyval(below, x_sorted[:i]))
-            r2_above = calculate_r_squared(int_sorted[i:], np.polyval(above, x_sorted[i:]))
-            
-            r2_sum = r2_below + r2_above
-            if r2_sum > best_r2_sum and above[0] > below[0]:
-                best_r2_sum = r2_sum
-                best_threshold = x_sorted[i]
-                best_slopes = (below[0], above[0])
-        
-        found = best_threshold is not None and best_slopes[1] > 2 * best_slopes[0]
-        return ThresholdAnalysis(None, best_threshold, best_slopes[0], best_slopes[1], found)
-    except:
-        return ThresholdAnalysis(None, None, 0, 0, False)
-
-# ==============================================================
 # FILE PARSING
 # ==============================================================
 @st.cache_data
@@ -894,7 +772,7 @@ with col2:
     energy_file = st.file_uploader("Upload energy file (optional)",
                                    type=['csv', 'txt', 'tsv', 'xlsx', 'xls'], key="energy_file")
     
-    if energy_file:
+        if energy_file:
         with st.expander("📊 Preview Energy Data", expanded=True):  # Changed to expanded=True
             try:
                 file_bytes = energy_file.read()
@@ -1426,4 +1304,5 @@ st.markdown("""
 📧 varun.solanki@fau.de | Friedrich-Alexander-Universität Erlangen-Nürnberg
 </div>
 """, unsafe_allow_html=True)
+
 
