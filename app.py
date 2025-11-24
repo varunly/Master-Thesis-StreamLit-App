@@ -1,6 +1,6 @@
 # ==============================================================
 # Streamlit App: Random Laser ASC Analyzer
-# With Thickness-Dependent Energy Calibration
+# Complete Version with Paste Energy Data, ND Correction & All Plots
 # ==============================================================
 import streamlit as st
 import pandas as pd
@@ -193,259 +193,128 @@ def apply_nd_correction(counts: np.ndarray, nd_value: float) -> np.ndarray:
     return counts * correction_factor
 
 # ==============================================================
-# ENERGY CALIBRATION PARSER (WITH THICKNESS SUPPORT)
+# ENERGY CALIBRATION PARSER (PASTE DATA)
 # ==============================================================
-def parse_pasted_energy_data(pasted_text: str) -> Dict:
+def parse_pasted_energy_data(pasted_text: str) -> Dict[float, Dict]:
     """
-    Parse pasted energy calibration data with optional thickness support
-    
-    Format 1 (Simple - no thickness):
-    200  190  180  170
-    0.008  0.025  0.058  0.122
-    ...
-    
-    Format 2 (With thickness in first column):
-    Thickness  200  190  180  170
-    3          0.008  0.025  0.058  0.122
-    5          0.010  0.030  0.070  0.150
-    7          0.012  0.035  0.082  0.178
-    ...
+    Parse pasted energy calibration data
+    Format:
+    Row 1: QS levels (tab-separated)
+    Rows 2-11: Energy measurements (tab-separated)
+    Row 13: Average (optional)
     """
     energy_map = {}
-    has_thickness = False
     
     try:
         lines = [line.strip() for line in pasted_text.strip().split('\n') if line.strip()]
         
         if len(lines) < 2:
-            st.error("❌ Need at least 2 rows (header + measurements)")
+            st.error("❌ Need at least 2 rows (QS levels + measurements)")
             return {}
         
-        # Parse first line: check if it starts with "Thickness" or numeric values
-        first_line = lines[0]
-        
+        # Parse row 1: QS levels
+        qs_line = lines[0]
         # Try different separators
+        qs_values = None
         for sep in ['\t', ',', ';', ' ']:
-            parts = [p.strip() for p in first_line.split(sep) if p.strip()]
+            parts = [p.strip() for p in qs_line.split(sep) if p.strip()]
             if len(parts) > 1:
-                # Check if first element is "Thickness" or similar
-                if parts[0].lower() in ['thickness', 't', 'thick']:
-                    has_thickness = True
-                    qs_values = [float(x) for x in parts[1:]]
-                    st.success(f"✅ Detected THICKNESS-DEPENDENT format")
-                    st.info(f"✅ Found {len(qs_values)} QS levels: {qs_values}")
-                else:
-                    # Try to parse as QS values
+                try:
+                    qs_values = [float(x) for x in parts]
+                    # Check if they look like QS levels (100-500 range)
+                    if all(100 <= x <= 500 for x in qs_values):
+                        st.success(f"✅ Found {len(qs_values)} QS levels: {qs_values}")
+                        break
+                except:
+                    continue
+        
+        if qs_values is None:
+            st.error("❌ Could not parse QS levels from first row")
+            st.info("Expected: tab-separated numbers like '200\t190\t180\t170'")
+            return {}
+        
+        # Initialize energy map
+        for qs in qs_values:
+            energy_map[qs] = {'readings': []}
+        
+        # Parse measurement rows (2-11)
+        measurement_rows = lines[1:11] if len(lines) >= 11 else lines[1:]
+        
+        for row_idx, line in enumerate(measurement_rows):
+            # Try different separators
+            values = None
+            for sep in ['\t', ',', ';', ' ']:
+                parts = [p.strip() for p in line.split(sep) if p.strip()]
+                if len(parts) == len(qs_values):
                     try:
-                        qs_values = [float(x) for x in parts]
-                        if all(100 <= x <= 500 for x in qs_values):
-                            has_thickness = False
-                            st.success(f"✅ Detected SIMPLE format (no thickness)")
-                            st.info(f"✅ Found {len(qs_values)} QS levels: {qs_values}")
-                        else:
-                            continue
+                        values = [float(x) for x in parts]
+                        break
                     except:
                         continue
-                break
+            
+            if values is None:
+                continue
+            
+            # Add measurements to map
+            for qs, energy in zip(qs_values, values):
+                # Convert J to mJ if needed (values < 0.01)
+                if energy < 0.01:
+                    energy *= 1000
+                energy_map[qs]['readings'].append(energy)
         
-        if not qs_values:
-            st.error("❌ Could not parse QS levels from first row")
-            return {}
+        # Calculate statistics
+        final_map = {}
+        for qs, data in energy_map.items():
+            if len(data['readings']) > 0:
+                final_map[qs] = {
+                    'mean': np.mean(data['readings']),
+                    'std': np.std(data['readings']),
+                    'readings': data['readings'],
+                    'n_readings': len(data['readings']),
+                    'od': 0.0
+                }
         
-        # Parse data rows
-        if has_thickness:
-            # Format: Thickness in first column
-            thickness_map = {}
-            data_rows = lines[1:]  # Skip header
-            
-            for line in data_rows:
-                for sep in ['\t', ',', ';', ' ']:
-                    parts = [p.strip() for p in line.split(sep) if p.strip()]
-                    if len(parts) == len(qs_values) + 1:  # thickness + QS values
-                        try:
-                            thickness = float(parts[0])
-                            energies = [float(x) for x in parts[1:]]
-                            
-                            # Convert J to mJ if needed
-                            energies = [e * 1000 if e < 0.01 else e for e in energies]
-                            
-                            if thickness not in thickness_map:
-                                thickness_map[thickness] = {qs: [] for qs in qs_values}
-                            
-                            for qs, energy in zip(qs_values, energies):
-                                thickness_map[thickness][qs].append(energy)
-                            break
-                        except:
-                            continue
-            
-            # Calculate statistics for each thickness-QS combination
-            for thickness, qs_dict in thickness_map.items():
-                energy_map[thickness] = {}
-                for qs, readings in qs_dict.items():
-                    if len(readings) > 0:
-                        energy_map[thickness][qs] = {
-                            'mean': np.mean(readings),
-                            'std': np.std(readings),
-                            'readings': readings,
-                            'n_readings': len(readings),
-                            'od': 0.0
-                        }
-            
-            st.success(f"✅ Parsed {len(energy_map)} thickness levels with {len(qs_values)} QS levels each")
-            
-        else:
-            # Format: Simple (no thickness) - original behavior
-            temp_map = {qs: [] for qs in qs_values}
-            data_rows = lines[1:]
-            
-            for line in data_rows:
-                for sep in ['\t', ',', ';', ' ']:
-                    parts = [p.strip() for p in line.split(sep) if p.strip()]
-                    if len(parts) == len(qs_values):
-                        try:
-                            energies = [float(x) for x in parts]
-                            # Convert J to mJ if needed
-                            energies = [e * 1000 if e < 0.01 else e for e in energies]
-                            
-                            for qs, energy in zip(qs_values, energies):
-                                temp_map[qs].append(energy)
-                            break
-                        except:
-                            continue
-            
-            # Calculate statistics (store under thickness=None for compatibility)
-            energy_map[None] = {}
-            for qs, readings in temp_map.items():
-                if len(readings) > 0:
-                    energy_map[None][qs] = {
-                        'mean': np.mean(readings),
-                        'std': np.std(readings),
-                        'readings': readings,
-                        'n_readings': len(readings),
-                        'od': 0.0
-                    }
-            
-            st.success(f"✅ Parsed {len(energy_map[None])} QS levels")
+        st.success(f"✅ Parsed {len(final_map)} QS levels with {sum(d['n_readings'] for d in final_map.values())} total measurements")
         
-        return energy_map
+        return final_map
         
     except Exception as e:
         st.error(f"❌ Error parsing data: {str(e)}")
-        import traceback
-        st.code(traceback.format_exc())
         return {}
 
 
-def interpolate_energy(qs_value: float, thickness_value: Optional[float], 
-                       energy_map: Dict) -> Tuple[float, float]:
+def interpolate_energy(qs_value: float, energy_map: Dict[float, Dict]) -> Tuple[float, float]:
     """
-    Interpolate energy for a given QS and thickness using the calibration map.
+    Interpolate energy for a given QS value using the calibration map.
     Returns (mean_energy, std_energy)
-    
-    Supports both:
-    - Simple format: energy_map[None][qs]
-    - Thickness format: energy_map[thickness][qs]
     """
     if not energy_map:
         return np.nan, np.nan
     
-    # Check if thickness-dependent or simple format
-    thickness_keys = list(energy_map.keys())
+    qs_levels = sorted(energy_map.keys())
     
-    if None in thickness_keys:
-        # Simple format (no thickness dependency)
-        qs_map = energy_map[None]
-        qs_levels = sorted(qs_map.keys())
-        
-        # Exact QS match
-        if qs_value in qs_map:
-            return qs_map[qs_value]['mean'], qs_map[qs_value]['std']
-        
-        # QS interpolation
-        if qs_value < min(qs_levels) or qs_value > max(qs_levels):
-            nearest_qs = min(qs_levels, key=lambda x: abs(x - qs_value))
-            return qs_map[nearest_qs]['mean'], qs_map[nearest_qs]['std']
-        
-        for i in range(len(qs_levels) - 1):
-            if qs_levels[i] <= qs_value <= qs_levels[i+1]:
-                qs1, qs2 = qs_levels[i], qs_levels[i+1]
-                e1 = qs_map[qs1]['mean']
-                e2 = qs_map[qs2]['mean']
-                std1 = qs_map[qs1]['std']
-                std2 = qs_map[qs2]['std']
-                
-                t = (qs_value - qs1) / (qs2 - qs1)
-                return e1 + t * (e2 - e1), std1 + t * (std2 - std1)
+    # Exact match
+    if qs_value in energy_map:
+        return energy_map[qs_value]['mean'], energy_map[qs_value]['std']
     
-    else:
-        # Thickness-dependent format
-        available_thicknesses = sorted([t for t in thickness_keys if t is not None])
-        
-        if not available_thicknesses:
-            return np.nan, np.nan
-        
-        # Find closest thickness
-        if thickness_value is None:
-            st.warning(f"⚠️ No thickness found in filename. Using {available_thicknesses[0]}mm")
-            thickness_value = available_thicknesses[0]
-        
-        # Exact thickness match
-        if thickness_value in energy_map:
-            qs_map = energy_map[thickness_value]
-            qs_levels = sorted(qs_map.keys())
+    # Out of range - use nearest value
+    if qs_value < min(qs_levels) or qs_value > max(qs_levels):
+        nearest_qs = min(qs_levels, key=lambda x: abs(x - qs_value))
+        return energy_map[nearest_qs]['mean'], energy_map[nearest_qs]['std']
+    
+    # Linear interpolation between two closest points
+    for i in range(len(qs_levels) - 1):
+        if qs_levels[i] <= qs_value <= qs_levels[i+1]:
+            qs1, qs2 = qs_levels[i], qs_levels[i+1]
+            e1, e2 = energy_map[qs1]['mean'], energy_map[qs2]['mean']
+            std1, std2 = energy_map[qs1]['std'], energy_map[qs2]['std']
             
-            # Exact QS match
-            if qs_value in qs_map:
-                return qs_map[qs_value]['mean'], qs_map[qs_value]['std']
+            # Linear interpolation
+            t = (qs_value - qs1) / (qs2 - qs1)
+            mean_interp = e1 + t * (e2 - e1)
+            std_interp = std1 + t * (std2 - std1)
             
-            # QS interpolation
-            if qs_value < min(qs_levels) or qs_value > max(qs_levels):
-                nearest_qs = min(qs_levels, key=lambda x: abs(x - qs_value))
-                return qs_map[nearest_qs]['mean'], qs_map[nearest_qs]['std']
-            
-            for i in range(len(qs_levels) - 1):
-                if qs_levels[i] <= qs_value <= qs_levels[i+1]:
-                    qs1, qs2 = qs_levels[i], qs_levels[i+1]
-                    e1 = qs_map[qs1]['mean']
-                    e2 = qs_map[qs2]['mean']
-                    std1 = qs_map[qs1]['std']
-                    std2 = qs_map[qs2]['std']
-                    
-                    t = (qs_value - qs1) / (qs2 - qs1)
-                    return e1 + t * (e2 - e1), std1 + t * (std2 - std1)
-        
-        else:
-            # Thickness interpolation needed
-            if thickness_value < min(available_thicknesses):
-                thick = min(available_thicknesses)
-                st.warning(f"⚠️ Thickness {thickness_value}mm below calibration range. Using {thick}mm")
-                thickness_value = thick
-            elif thickness_value > max(available_thicknesses):
-                thick = max(available_thicknesses)
-                st.warning(f"⚠️ Thickness {thickness_value}mm above calibration range. Using {thick}mm")
-                thickness_value = thick
-            else:
-                # Interpolate between two thicknesses
-                for i in range(len(available_thicknesses) - 1):
-                    t1, t2 = available_thicknesses[i], available_thicknesses[i+1]
-                    if t1 <= thickness_value <= t2:
-                        # Get energy for both thicknesses at this QS
-                        e1, std1 = interpolate_energy(qs_value, t1, {t1: energy_map[t1]})
-                        e2, std2 = interpolate_energy(qs_value, t2, {t2: energy_map[t2]})
-                        
-                        # Linear interpolation between thicknesses
-                        t_frac = (thickness_value - t1) / (t2 - t1)
-                        return e1 + t_frac * (e2 - e1), std1 + t_frac * (std2 - std1)
-            
-            # Fallback: use exact thickness value found above
-            qs_map = energy_map[thickness_value]
-            qs_levels = sorted(qs_map.keys())
-            
-            if qs_value in qs_map:
-                return qs_map[qs_value]['mean'], qs_map[qs_value]['std']
-            
-            nearest_qs = min(qs_levels, key=lambda x: abs(x - qs_value))
-            return qs_map[nearest_qs]['mean'], qs_map[nearest_qs]['std']
+            return mean_interp, std_interp
     
     return np.nan, np.nan
 
@@ -589,7 +458,7 @@ def parse_asc_file(file_content: str, skip_rows: int) -> Tuple[np.ndarray, np.nd
     return wl, counts
 
 # ==============================================================
-# VISUALIZATION FUNCTIONS (keeping all original ones)
+# VISUALIZATION FUNCTIONS
 # ==============================================================
 def create_spectrum_plot(wl: np.ndarray, counts_raw: np.ndarray, counts_corrected: np.ndarray,
                         fit_result: FitResult, filename: str, nd_value: float, 
@@ -901,7 +770,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.markdown('<p class="main-header">🔬 Random Laser Analyzer</p>', unsafe_allow_html=True)
-st.markdown("**Lorentzian fitting • OD correction • Thickness-dependent energy calibration • Complete analysis**")
+st.markdown("**Lorentzian fitting • OD correction • Paste energy data • Complete analysis suite**")
 
 if not KALEIDO_AVAILABLE:
     st.warning("⚠️ Image export disabled. Install: `pip install kaleido`")
@@ -927,7 +796,7 @@ with st.sidebar:
     st.markdown("""
     - ✅ Lorentzian fitting
     - ✅ OD/ND correction
-    - ✅ **Thickness-dependent energy**
+    - ✅ Paste energy data
     - ✅ Wavelength vs Energy
     - ✅ Intensity vs Energy
     - ✅ Threshold detection
@@ -937,7 +806,7 @@ with st.sidebar:
     `UL_5mm_QS_110_10rep_17mgR6G_UL_5%IL_LL_1%IL_OD=2.asc`
     
     Extracts:
-    - **Thickness: `UL_5mm`** ← Important!
+    - Thickness: `UL_5mm`
     - QS: `QS_110`
     - Conc: `UL_5%IL`, `LL_1%IL`
     - Dye: `17mgR6G`
@@ -954,47 +823,37 @@ with col1:
 with col2:
     st.subheader("⚡ Energy Calibration")
     
-    with st.expander("📋 Paste Formats", expanded=False):
+    with st.expander("📋 Paste Format", expanded=False):
         st.markdown("""
-        ### Format 1: Simple (No Thickness)
-        Use when QS level is the only variable:
-        ```
-        200  190  180  170  160
-        0.008  0.025  0.058  0.122  0.245
-        0.007  0.026  0.060  0.120  0.250
-        ... (more measurements)
-        ```
+        ### How to Paste Your Data
         
-        ---
+        **Just copy-paste your table directly!**
         
-        ### Format 2: With Thickness ✨ NEW!
-        Use when varying thickness at same QS:
+        Example (from Excel/your data):
         ```
-        Thickness  200  190  180  170  160
-        3          0.008  0.025  0.058  0.122  0.245
-        3          0.007  0.026  0.060  0.120  0.250
-        5          0.010  0.030  0.070  0.150  0.300
-        5          0.011  0.029  0.068  0.148  0.295
-        7          0.012  0.035  0.082  0.178  0.355
-        7          0.013  0.034  0.080  0.175  0.350
+        200	190	180	170	160	150	140	130	120	110
+        7.48E-06	2.28E-05	5.24E-05	1.19E-04	2.15E-04	3.36E-04	5.05E-04	8.22E-04	1.04E-03	1.36E-03
+        6.01E-06	2.46E-05	5.80E-05	1.12E-04	2.03E-04	3.28E-04	4.99E-04	7.54E-04	1.01E-03	1.39E-03
+        6.53E-06	3.07E-05	5.05E-05	1.18E-04	2.30E-04	3.43E-04	5.65E-04	7.88E-04	9.85E-04	1.34E-03
+        ... (more rows)
         ```
         
-        **The code auto-detects which format!**
-        
-        ---
-        
-        ### Notes:
+        **Format:**
+        - Row 1: QS levels (200, 190, 180, ...)
+        - Rows 2-11: Energy measurements
         - Tab or comma separated
-        - Scientific notation OK
-        - Auto-converts J to mJ
-        - Multiple measurements per thickness/QS combo
+        - Scientific notation OK (7.48E-06)
+        
+        **Auto-converts:**
+        - J to mJ (values < 0.01)
+        - Calculates mean & std dev
         """)
     
     energy_input = st.text_area(
         "Paste Energy Calibration Data",
         height=300,
-        placeholder="Thickness\t200\t190\t180\t170\n3\t0.008\t0.025\t0.058\t0.122\n5\t0.010\t0.030\t0.070\t0.150\n...",
-        help="Paste table with or without thickness column"
+        placeholder="200\t190\t180\t170\t160\t150\n7.48E-06\t2.28E-05\t5.24E-05\t1.19E-04\t2.15E-04\t3.36E-04\n...",
+        help="Copy-paste table: Row 1 = QS levels, Rows 2-11 = measurements"
     )
     
     energy_map = {}
@@ -1004,109 +863,53 @@ with col2:
         
         if energy_map:
             with st.expander("📊 Calibration Data", expanded=True):
-                # Check if thickness-dependent
-                thickness_keys = [k for k in energy_map.keys() if k is not None]
+                energy_df = pd.DataFrame([
+                    {
+                        'QS': qs,
+                        'Mean (mJ)': d['mean'],
+                        'Std (mJ)': d['std'],
+                        'N': d['n_readings']
+                    }
+                    for qs, d in energy_map.items()
+                ]).sort_values('QS', ascending=False)
                 
-                if thickness_keys:
-                    # Thickness-dependent display
-                    st.success(f"✅ **Thickness-Dependent Calibration**")
-                    st.info(f"📏 Thickness levels: {sorted(thickness_keys)}")
-                    
-                    for thickness in sorted(thickness_keys):
-                        st.markdown(f"### Thickness = {thickness} mm")
-                        
-                        energy_df = pd.DataFrame([
-                            {
-                                'QS': qs,
-                                'Mean (mJ)': d['mean'],
-                                'Std (mJ)': d['std'],
-                                'N': d['n_readings']
-                            }
-                            for qs, d in energy_map[thickness].items()
-                        ]).sort_values('QS', ascending=False)
-                        
-                        st.dataframe(energy_df.style.format({
-                            'QS': '{:.0f}',
-                            'Mean (mJ)': '{:.4f}',
-                            'Std (mJ)': '{:.4f}',
-                            'N': '{:.0f}'
-                        }), use_container_width=True)
-                    
-                    # Plot all thickness curves
-                    fig = go.Figure()
-                    colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd']
-                    
-                    for idx, thickness in enumerate(sorted(thickness_keys)):
-                        energy_df = pd.DataFrame([
-                            {'QS': qs, 'Mean (mJ)': d['mean'], 'Std (mJ)': d['std']}
-                            for qs, d in energy_map[thickness].items()
-                        ]).sort_values('QS', ascending=False)
-                        
-                        fig.add_trace(go.Scatter(
-                            x=energy_df['QS'],
-                            y=energy_df['Mean (mJ)'],
-                            error_y=dict(type='data', array=energy_df['Std (mJ)'], visible=True),
-                            mode='markers+lines',
-                            marker=dict(size=10),
-                            line=dict(width=2),
-                            name=f'{thickness} mm'
-                        ))
-                    
-                    fig.update_layout(
-                        title="<b>Energy Calibration Curves (All Thicknesses)</b>",
-                        xaxis_title="QS Level",
-                        yaxis_title="Pump Energy (mJ)",
-                        template="plotly_white",
-                        height=500,
-                        xaxis=dict(autorange='reversed')
-                    )
-                    st.plotly_chart(fig, use_container_width=True)
-                    
-                else:
-                    # Simple format display
-                    st.success(f"✅ **Simple Calibration (No Thickness)**")
-                    
-                    energy_df = pd.DataFrame([
-                        {
-                            'QS': qs,
-                            'Mean (mJ)': d['mean'],
-                            'Std (mJ)': d['std'],
-                            'N': d['n_readings']
-                        }
-                        for qs, d in energy_map[None].items()
-                    ]).sort_values('QS', ascending=False)
-                    
-                    st.dataframe(energy_df.style.format({
-                        'QS': '{:.0f}',
-                        'Mean (mJ)': '{:.4f}',
-                        'Std (mJ)': '{:.4f}',
-                        'N': '{:.0f}'
-                    }), use_container_width=True)
-                    
-                    # Plot
-                    fig = go.Figure()
-                    fig.add_trace(go.Scatter(
-                        x=energy_df['QS'],
-                        y=energy_df['Mean (mJ)'],
-                        error_y=dict(type='data', array=energy_df['Std (mJ)'], visible=True),
-                        mode='markers+lines',
-                        marker=dict(size=10, color='#667eea'),
-                        line=dict(width=2, color='#667eea')
-                    ))
-                    fig.update_layout(
-                        title="<b>Energy Calibration Curve</b>",
-                        xaxis_title="QS Level",
-                        yaxis_title="Pump Energy (mJ)",
-                        template="plotly_white",
-                        height=400,
-                        xaxis=dict(autorange='reversed')
-                    )
-                    st.plotly_chart(fig, use_container_width=True)
+                st.dataframe(energy_df.style.format({
+                    'QS': '{:.0f}',
+                    'Mean (mJ)': '{:.4f}',
+                    'Std (mJ)': '{:.4f}',
+                    'N': '{:.0f}'
+                }), use_container_width=True)
+                
+                # Plot calibration curve
+                fig = go.Figure()
+                fig.add_trace(go.Scatter(
+                    x=energy_df['QS'],
+                    y=energy_df['Mean (mJ)'],
+                    error_y=dict(type='data', array=energy_df['Std (mJ)'], visible=True),
+                    mode='markers+lines',
+                    marker=dict(size=10, color='#667eea'),
+                    line=dict(width=2, color='#667eea')
+                ))
+                fig.update_layout(
+                    title="<b>Energy Calibration Curve</b>",
+                    xaxis_title="QS Level",
+                    yaxis_title="Pump Energy (mJ)",
+                    template="plotly_white",
+                    height=400,
+                    xaxis=dict(autorange='reversed')
+                )
+                st.plotly_chart(fig, use_container_width=True)
+                
+                # Stats
+                col_a, col_b, col_c = st.columns(3)
+                col_a.metric("QS Levels", len(energy_map))
+                col_b.metric("Min Energy", f"{energy_df['Mean (mJ)'].min():.4f} mJ")
+                col_c.metric("Max Energy", f"{energy_df['Mean (mJ)'].max():.4f} mJ")
     else:
         st.info("💡 Paste your energy calibration data above")
 
 # ==============================================================
-# MAIN PROCESSING (continue with rest of the code...)
+# MAIN PROCESSING
 # ==============================================================
 if uploaded_files:
     st.markdown("---")
@@ -1120,11 +923,7 @@ if uploaded_files:
     combined_fig = go.Figure()
     
     if energy_map:
-        thickness_keys = [k for k in energy_map.keys() if k is not None]
-        if thickness_keys:
-            st.info(f"⚡ **Thickness-dependent energy calibration active** ({len(thickness_keys)} thickness levels)")
-        else:
-            st.info(f"⚡ **Energy calibration active** (simple mode)")
+        st.info(f"⚡ **Energy calibration active** ({len(energy_map)} QS levels)")
     
     with zipfile.ZipFile(plot_zip, "w", zipfile.ZIP_DEFLATED) as html_buffer:
         img_buffer = zipfile.ZipFile(image_zip, "w", zipfile.ZIP_DEFLATED) if KALEIDO_AVAILABLE else None
@@ -1141,17 +940,17 @@ if uploaded_files:
                     
                     # Metadata
                     qs = extract_qs(filename)
-                    thickness = extract_thickness(filename)
                     nd_value = extract_nd(filename) if apply_nd else 0.0
+                    thickness = extract_thickness(filename)
                     concentration = extract_concentration(filename)
                     dye_amount = extract_dye_amount(filename)
                     repetitions = extract_repetitions(filename)
                     sample_label = get_sample_label(thickness, concentration, dye_amount)
                     sample_label_short = get_short_label(thickness, concentration)
                     
-                    # Energy (now with thickness)
+                    # Energy
                     if energy_map and not np.isnan(qs):
-                        energy_mean, energy_std = interpolate_energy(qs, thickness, energy_map)
+                        energy_mean, energy_std = interpolate_energy(qs, energy_map)
                     else:
                         energy_mean, energy_std = np.nan, np.nan
                     
@@ -1203,8 +1002,6 @@ if uploaded_files:
                     
                     # Combined
                     label = f"QS={qs:.0f}" if not np.isnan(qs) else filename
-                    if thickness:
-                        label += f" | {thickness}mm"
                     if not np.isnan(energy_mean):
                         label += f" ({energy_mean:.2f}mJ)"
                     if nd_value > 0:
@@ -1238,8 +1035,6 @@ if uploaded_files:
                     
                 except Exception as e:
                     st.error(f"Error: {filename}: {e}")
-                    import traceback
-                    st.code(traceback.format_exc())
                     continue
                 
                 progress_bar.progress((idx + 1) / len(uploaded_files))
@@ -1252,7 +1047,7 @@ if uploaded_files:
     progress_bar.empty()
     
     # ==============================================================
-    # RESULTS (rest is same as before...)
+    # RESULTS
     # ==============================================================
     
     st.markdown("---")
@@ -1357,10 +1152,33 @@ if uploaded_files:
                 except:
                     pass
     
-    # Energy vs Wavelength plot
+    # ==============================================================
+    # ENERGY VS WAVELENGTH PLOT
+    # ==============================================================
     if 'Pump Energy (mJ)' in summary_df.columns and summary_df['Pump Energy (mJ)'].notna().sum() > 2:
         st.markdown("---")
         st.subheader("📈 Peak Wavelength Evolution")
+        
+        if 'Sample Label Short' in summary_df.columns:
+            unique_conditions = summary_df['Sample Label Short'].unique()
+            unique_conditions = [c for c in unique_conditions if c != "No Label"]
+            
+            if len(unique_conditions) > 0:
+                st.info(f"📊 **Sample Conditions**: {len(unique_conditions)} detected")
+                
+                with st.expander("🔍 Sample Conditions Details"):
+                    conditions_summary = summary_df[summary_df['Sample Label Short'] != "No Label"].groupby('Sample Label Short').agg({
+                        'File': 'count',
+                        'Thickness (mm)': 'first',
+                        'UL Concentration (%)': 'first',
+                        'LL Concentration (%)': 'first',
+                        'Dye Amount (mg)': 'first',
+                        'Pump Energy (mJ)': ['min', 'max'],
+                        'Peak λ (nm)': ['min', 'max']
+                    }).round(4)
+                    conditions_summary.columns = ['Files', 'Thickness', 'UL%', 'LL%', 
+                                                 'Dye(mg)', 'E min', 'E max', 'λ min', 'λ max']
+                    st.dataframe(conditions_summary)
         
         energy_wl_fig = create_energy_wavelength_plot(summary_df)
         
@@ -1377,8 +1195,29 @@ if uploaded_files:
                                           key="dl_e_wl")
                     except:
                         pass
+            
+            with st.expander("📊 Wavelength Shift Statistics"):
+                if 'Sample Label Short' in summary_df.columns:
+                    for label in summary_df['Sample Label Short'].unique():
+                        if label == "No Label":
+                            continue
+                        
+                        group = summary_df[summary_df['Sample Label Short'] == label].dropna(
+                            subset=['Pump Energy (mJ)', 'Peak λ (nm)'])
+                        if len(group) > 1:
+                            min_wl = group['Peak λ (nm)'].min()
+                            max_wl = group['Peak λ (nm)'].max()
+                            shift = max_wl - min_wl
+                            
+                            st.markdown(f"**{label}**")
+                            col1, col2, col3 = st.columns(3)
+                            col1.metric("λ Range", f"{min_wl:.2f}-{max_wl:.2f} nm")
+                            col2.metric("Shift", f"{shift:.2f} nm")
+                            col3.metric("Points", len(group))
     
-    # Energy vs Intensity plot
+    # ==============================================================
+    # ENERGY VS PEAK INTENSITY PLOT
+    # ==============================================================
     if 'Pump Energy (mJ)' in summary_df.columns and summary_df['Pump Energy (mJ)'].notna().sum() > 2:
         st.markdown("---")
         st.subheader("💡 Peak Intensity Evolution")
@@ -1398,6 +1237,25 @@ if uploaded_files:
                                           key="dl_e_int")
                     except:
                         pass
+            
+            with st.expander("📊 Intensity Growth Statistics"):
+                if 'Sample Label Short' in summary_df.columns:
+                    for label in summary_df['Sample Label Short'].unique():
+                        if label == "No Label":
+                            continue
+                        
+                        group = summary_df[summary_df['Sample Label Short'] == label].dropna(
+                            subset=['Pump Energy (mJ)', 'Peak Intensity'])
+                        if len(group) > 1:
+                            min_int = group['Peak Intensity'].min()
+                            max_int = group['Peak Intensity'].max()
+                            growth = max_int / min_int if min_int > 0 else 0
+                            
+                            st.markdown(f"**{label}**")
+                            col1, col2, col3 = st.columns(3)
+                            col1.metric("Range", f"{min_int:.0f}-{max_int:.0f}")
+                            col2.metric("Growth", f"{growth:.1f}×")
+                            col3.metric("Points", len(group))
     
     # Downloads
     st.markdown("---")
@@ -1420,18 +1278,10 @@ if uploaded_files:
         with pd.ExcelWriter(excel_buffer, engine='xlsxwriter') as writer:
             summary_df.to_excel(writer, sheet_name='Results', index=False)
             if energy_map:
-                # Export calibration data
-                cal_data = []
-                for thickness_key in energy_map.keys():
-                    for qs, d in energy_map[thickness_key].items():
-                        cal_data.append({
-                            'Thickness': thickness_key if thickness_key is not None else 'N/A',
-                            'QS': qs,
-                            'Mean (mJ)': d['mean'],
-                            'Std (mJ)': d['std'],
-                            'N': d['n_readings']
-                        })
-                energy_cal_df = pd.DataFrame(cal_data).sort_values(['Thickness', 'QS'])
+                energy_cal_df = pd.DataFrame([
+                    {'QS': qs, 'Mean (mJ)': d['mean'], 'Std (mJ)': d['std'], 'N': d['n_readings']}
+                    for qs, d in energy_map.items()
+                ]).sort_values('QS')
                 energy_cal_df.to_excel(writer, sheet_name='Energy Cal', index=False)
         
         st.download_button("📊 Excel", excel_buffer.getvalue(),
@@ -1460,42 +1310,30 @@ else:
         `UL_5mm_QS_110_10rep_17mgR6G_UL_5%IL_LL_1%IL_OD=2.asc`
         
         **Auto-extracts:**
-        - **Thickness: `UL_5mm` → 5mm** ← Important for thickness-dependent calibration!
+        - Thickness: `UL_5mm` → 5mm
         - QS: `QS_110` → 110
         - UL Conc: `UL_5%IL` → 5%
         - LL Conc: `LL_1%IL` → 1%
         - Dye: `17mgR6G` → 17mg
         - OD: `OD=2` → 2 (×100)
         
-        ### Energy Calibration Formats
+        ### Energy Calibration (Copy-Paste)
         
-        **Format 1: Simple (same thickness, varying QS)**
-        ```
-        200  190  180  170
-        0.008  0.025  0.058  0.122
-        0.007  0.026  0.060  0.120
-        ```
+        **Just paste your table directly!**
         
-        **Format 2: Thickness-Dependent ✨**
+        Example:
         ```
-        Thickness  200  190  180  170
-        3          0.008  0.025  0.058  0.122
-        3          0.007  0.026  0.060  0.120
-        5          0.010  0.030  0.070  0.150
-        5          0.011  0.029  0.068  0.148
-        7          0.012  0.035  0.082  0.178
-        7          0.013  0.034  0.080  0.175
+        200	190	180	170	160	150
+        7.48E-06	2.28E-05	5.24E-05	1.19E-04	2.15E-04	3.36E-04
+        6.01E-06	2.46E-05	5.80E-05	1.12E-04	2.03E-04	3.28E-04
+        ... (more rows)
         ```
         
-        **The code automatically detects which format you're using!**
-        
-        ### Example Use Case
-        You measured pump energy for:
-        - QS=110 at thickness=3mm → E₁
-        - QS=110 at thickness=5mm → E₂
-        - QS=110 at thickness=7mm → E₃
-        
-        The code will interpolate energy based on BOTH QS and thickness!
+        - Row 1: QS levels
+        - Rows 2-11: Energy measurements
+        - Tab/comma separated
+        - Scientific notation supported
+        - Auto-converts J to mJ
         
         ### Plots Generated
         - **Individual Spectra**: Lorentzian fits with OD correction
@@ -1504,7 +1342,7 @@ else:
         - **Energy vs Wavelength**: Peak shifts
         - **Energy vs Intensity**: Growth curves
         
-        All grouped by sample conditions!
+        All grouped by sample conditions with smooth curves!
         """)
 
 st.markdown("---")
