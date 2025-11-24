@@ -1,6 +1,6 @@
 # ==============================================================
 # Streamlit App: Random Laser ASC Analyzer
-# Complete Version with ND Correction, Energy Calibration & Wavelength Analysis
+# Complete Version with ND Correction, Energy Calibration & All Plots
 # ==============================================================
 import streamlit as st
 import pandas as pd
@@ -51,23 +51,17 @@ class ThresholdAnalysis:
     threshold_found: bool
 
 # ==============================================================
-# SAMPLE METADATA EXTRACTION (FOR YOUR FORMAT)
+# SAMPLE METADATA EXTRACTION
 # ==============================================================
 def extract_thickness(filename: str) -> Optional[float]:
-    """
-    Extract thickness from filename
-    Examples: 
-    - "UL_5mm_..." -> 5.0 (upper layer)
-    - "LL_10mm_..." -> 10.0 (lower layer)
-    """
+    """Extract thickness from filename"""
     patterns = [
-        r'UL[_\s-]*(\d+\.?\d*)\s*mm',  # UL_5mm
-        r'LL[_\s-]*(\d+\.?\d*)\s*mm',  # LL_10mm
-        r'(\d+\.?\d*)\s*mm',            # 5mm, 10mm
-        r't[_\s-]*(\d+\.?\d*)',         # t5, t_10
-        r'thickness[_\s-]*(\d+\.?\d*)', # thickness_5
+        r'UL[_\s-]*(\d+\.?\d*)\s*mm',
+        r'LL[_\s-]*(\d+\.?\d*)\s*mm',
+        r'(\d+\.?\d*)\s*mm',
+        r't[_\s-]*(\d+\.?\d*)',
+        r'thickness[_\s-]*(\d+\.?\d*)',
     ]
-    
     for pattern in patterns:
         match = re.search(pattern, filename, re.IGNORECASE)
         if match:
@@ -75,34 +69,26 @@ def extract_thickness(filename: str) -> Optional[float]:
     return None
 
 def extract_concentration(filename: str) -> Optional[Dict[str, float]]:
-    """
-    Extract concentration from filename (handles upper and lower layers)
-    Examples:
-    - "UL_5%IL_LL_1%IL" -> {'upper': 5.0, 'lower': 1.0}
-    """
+    """Extract concentration from filename (handles upper and lower layers)"""
     conc_data = {'upper': None, 'lower': None}
     
-    # Pattern for UL_5%IL (upper layer)
     ul_pattern = r'UL[_\s-]*(\d+\.?\d*)\s*%\s*IL'
     ul_match = re.search(ul_pattern, filename, re.IGNORECASE)
     if ul_match:
         conc_data['upper'] = float(ul_match.group(1))
     
-    # Pattern for LL_1%IL (lower layer)
     ll_pattern = r'LL[_\s-]*(\d+\.?\d*)\s*%\s*IL'
     ll_match = re.search(ll_pattern, filename, re.IGNORECASE)
     if ll_match:
         conc_data['lower'] = float(ll_match.group(1))
     
-    # Fallback patterns for simpler formats
     if conc_data['upper'] is None and conc_data['lower'] is None:
         simple_patterns = [
-            r'(\d+\.?\d*)\s*%',          # 5%, 10.5%
-            r'(\d+)p(\d+)',              # 1p5 -> 1.5
-            r'c[_\s-]*(\d+\.?\d*)',      # c5, c_10
-            r'conc[_\s-]*(\d+\.?\d*)',   # conc_5
+            r'(\d+\.?\d*)\s*%',
+            r'(\d+)p(\d+)',
+            r'c[_\s-]*(\d+\.?\d*)',
+            r'conc[_\s-]*(\d+\.?\d*)',
         ]
-        
         for pattern in simple_patterns:
             match = re.search(pattern, filename.lower())
             if match:
@@ -112,22 +98,16 @@ def extract_concentration(filename: str) -> Optional[Dict[str, float]]:
                     conc_data['upper'] = float(match.group(1))
                 break
     
-    # Return None if no concentration found
     if conc_data['upper'] is None and conc_data['lower'] is None:
         return None
-    
     return conc_data
 
 def extract_nd(filename: str) -> float:
-    """
-    Extract ND/OD filter value from filename
-    Examples: "OD=2" -> 2.0, "ND2" -> 2.0
-    """
+    """Extract ND/OD filter value from filename"""
     patterns = [
-        r'OD\s*[=_-]*\s*(\d+\.?\d*)',   # OD=2, OD_2
-        r'ND\s*[=_-]*\s*(\d+\.?\d*)',   # ND=2, ND_2
+        r'OD\s*[=_-]*\s*(\d+\.?\d*)',
+        r'ND\s*[=_-]*\s*(\d+\.?\d*)',
     ]
-    
     for pattern in patterns:
         match = re.search(pattern, filename, re.IGNORECASE)
         if match:
@@ -137,12 +117,11 @@ def extract_nd(filename: str) -> float:
 def extract_qs(filename: str) -> float:
     """Extract Q-switch value from filename"""
     patterns = [
-        r'QS[_\s-]+(\d+\.?\d*)',        # QS_110, QS 110
-        r'QS(\d+\.?\d*)',                # QS110
-        r'qs[_\s-]*(\d+\.?\d*)',         # qs_110
-        r'q[_\s-]*(\d+\.?\d*)',          # q_110
+        r'QS[_\s-]+(\d+\.?\d*)',
+        r'QS(\d+\.?\d*)',
+        r'qs[_\s-]*(\d+\.?\d*)',
+        r'q[_\s-]*(\d+\.?\d*)',
     ]
-    
     for pattern in patterns:
         match = re.search(pattern, filename.lower())
         if match:
@@ -153,15 +132,11 @@ def extract_qs(filename: str) -> float:
     return np.nan
 
 def extract_dye_amount(filename: str) -> Optional[float]:
-    """
-    Extract dye amount from filename
-    Examples: "17mgR6G" -> 17.0
-    """
+    """Extract dye amount from filename"""
     patterns = [
-        r'(\d+\.?\d*)\s*mg\s*R6G',      # 17mgR6G, 10mg R6G
-        r'(\d+\.?\d*)\s*mg',             # 17mg
+        r'(\d+\.?\d*)\s*mg\s*R6G',
+        r'(\d+\.?\d*)\s*mg',
     ]
-    
     for pattern in patterns:
         match = re.search(pattern, filename, re.IGNORECASE)
         if match:
@@ -169,14 +144,8 @@ def extract_dye_amount(filename: str) -> Optional[float]:
     return None
 
 def extract_repetitions(filename: str) -> Optional[int]:
-    """
-    Extract number of repetitions from filename
-    Examples: "10rep" -> 10
-    """
-    patterns = [
-        r'(\d+)\s*rep',                  # 10rep, 10 rep
-    ]
-    
+    """Extract number of repetitions from filename"""
+    patterns = [r'(\d+)\s*rep']
     for pattern in patterns:
         match = re.search(pattern, filename, re.IGNORECASE)
         if match:
@@ -187,10 +156,8 @@ def get_sample_label(thickness: Optional[float], concentration: Optional[Dict],
                     dye_amount: Optional[float] = None) -> str:
     """Generate a comprehensive label for the sample"""
     parts = []
-    
     if thickness is not None:
         parts.append(f"UL {thickness}mm")
-    
     if concentration is not None:
         if concentration.get('upper') is not None and concentration.get('lower') is not None:
             parts.append(f"UL {concentration['upper']}%IL | LL {concentration['lower']}%IL")
@@ -198,10 +165,8 @@ def get_sample_label(thickness: Optional[float], concentration: Optional[Dict],
             parts.append(f"{concentration['upper']}%IL")
         elif concentration.get('lower') is not None:
             parts.append(f"LL {concentration['lower']}%IL")
-    
     if dye_amount is not None:
         parts.append(f"{dye_amount}mg R6G")
-    
     if parts:
         return " | ".join(parts)
     return "No Label"
@@ -209,16 +174,13 @@ def get_sample_label(thickness: Optional[float], concentration: Optional[Dict],
 def get_short_label(thickness: Optional[float], concentration: Optional[Dict]) -> str:
     """Generate a short label for plotting"""
     parts = []
-    
     if thickness is not None:
         parts.append(f"{thickness}mm")
-    
     if concentration is not None:
         if concentration.get('upper') is not None and concentration.get('lower') is not None:
             parts.append(f"UL{concentration['upper']}%-LL{concentration['lower']}%")
         elif concentration.get('upper') is not None:
             parts.append(f"{concentration['upper']}%")
-    
     if parts:
         return " ".join(parts)
     return "No Label"
@@ -229,6 +191,167 @@ def apply_nd_correction(counts: np.ndarray, nd_value: float) -> np.ndarray:
         return counts
     correction_factor = 10 ** nd_value
     return counts * correction_factor
+
+# ==============================================================
+# ENERGY CALIBRATION FUNCTIONS (FOR YOUR EXACT FORMAT)
+# ==============================================================
+@st.cache_data
+def parse_energy_file(file_content: str, file_type: str, file_bytes: bytes = None) -> Dict[float, Dict]:
+    """
+    Parse energy calibration file - YOUR EXACT FORMAT
+    
+    Format:
+    Row 1: QS levels (columns A-K, up to 10 QS values)
+    Rows 2-11: Energy readings (10 measurements)
+    Row 12: (empty or label)
+    Row 13: Average energy (optional)
+    Row 14: OD values with label "OD=" in first column
+    
+    Only reads up to column K (11 columns) and row 14
+    """
+    energy_map = {}
+    
+    try:
+        # Read file (limit to first 14 rows and 11 columns)
+        if file_bytes and ('xlsx' in str(file_type).lower() or 'xls' in str(file_type).lower()):
+            import io
+            df = pd.read_excel(io.BytesIO(file_bytes), header=None, nrows=14, usecols=range(11))
+        else:
+            for sep in ['\t', ',', ';', '|']:
+                try:
+                    df = pd.read_csv(StringIO(file_content), sep=sep, header=None, nrows=14, usecols=range(11))
+                    break
+                except:
+                    continue
+        
+        if df.empty:
+            st.error("Could not read energy file")
+            return {}
+        
+        # Row 1 (index 0): QS levels
+        first_row = df.iloc[0, :]
+        
+        # Extract QS levels (skip first column if it's a label)
+        qs_levels = []
+        start_col = 0
+        
+        try:
+            float(first_row.iloc[0])
+            start_col = 0
+        except:
+            start_col = 1
+        
+        for val in first_row.iloc[start_col:]:
+            try:
+                if pd.notna(val):
+                    qs_levels.append(float(val))
+            except:
+                continue
+        
+        if not qs_levels:
+            st.error("Could not find QS levels in first row")
+            return {}
+        
+        # Initialize storage
+        for qs in qs_levels:
+            energy_map[qs] = {'readings': [], 'od': 0.0}
+        
+        # Read energy readings from rows 2-11 (indices 1-10)
+        for row_idx in range(1, min(11, len(df))):
+            row = df.iloc[row_idx, :]
+            
+            for col_idx, qs in enumerate(qs_levels):
+                try:
+                    energy_val = float(row.iloc[start_col + col_idx])
+                    if pd.notna(energy_val):
+                        # Convert J to mJ if needed
+                        if energy_val < 0.1:
+                            energy_val = energy_val * 1000
+                        energy_map[qs]['readings'].append(energy_val)
+                except:
+                    continue
+        
+        # Read average from row 13 (index 12) - optional
+        if len(df) > 12:
+            try:
+                avg_row = df.iloc[12, :]
+                for col_idx, qs in enumerate(qs_levels):
+                    try:
+                        avg_val = float(avg_row.iloc[start_col + col_idx])
+                        if pd.notna(avg_val):
+                            if avg_val < 0.1:
+                                avg_val = avg_val * 1000
+                            energy_map[qs]['file_avg'] = avg_val
+                    except:
+                        pass
+            except:
+                pass
+        
+        # Read OD values from row 14 (index 13)
+        if len(df) > 13:
+            try:
+                od_row = df.iloc[13, :]
+                # Check if first cell contains "OD" or "ND" label
+                first_cell = str(od_row.iloc[0]).upper()
+                if 'OD' in first_cell or 'ND' in first_cell:
+                    start_col_od = 1
+                else:
+                    start_col_od = start_col
+                
+                for col_idx, qs in enumerate(qs_levels):
+                    try:
+                        od_val = float(od_row.iloc[start_col_od + col_idx])
+                        if pd.notna(od_val):
+                            energy_map[qs]['od'] = float(od_val)
+                    except:
+                        pass
+            except:
+                pass
+        
+        # Calculate statistics
+        final_map = {}
+        for qs in energy_map:
+            readings = energy_map[qs]['readings']
+            if readings:
+                final_map[qs] = {
+                    'mean': np.mean(readings),
+                    'std': np.std(readings),
+                    'readings': readings,
+                    'n_readings': len(readings),
+                    'od': energy_map[qs].get('od', 0.0),
+                    'file_avg': energy_map[qs].get('file_avg', np.mean(readings))
+                }
+        
+        return final_map
+        
+    except Exception as e:
+        st.error(f"Error parsing energy file: {str(e)}")
+        import traceback
+        st.error(traceback.format_exc())
+        return {}
+
+def interpolate_energy(qs_value: float, energy_map: Dict[float, Dict]) -> Tuple[float, float]:
+    """Get energy for QS value with interpolation"""
+    if not energy_map or np.isnan(qs_value):
+        return np.nan, np.nan
+    
+    if qs_value in energy_map:
+        return energy_map[qs_value]['mean'], energy_map[qs_value]['std']
+    
+    qs_values = sorted(energy_map.keys())
+    
+    if qs_value < qs_values[0]:
+        return energy_map[qs_values[0]]['mean'], energy_map[qs_values[0]]['std']
+    if qs_value > qs_values[-1]:
+        return energy_map[qs_values[-1]]['mean'], energy_map[qs_values[-1]]['std']
+    
+    energy_means = [energy_map[qs]['mean'] for qs in qs_values]
+    energy_stds = [energy_map[qs]['std'] for qs in qs_values]
+    
+    interp_mean = np.interp(qs_value, qs_values, energy_means)
+    interp_std = np.interp(qs_value, qs_values, energy_stds)
+    
+    return interp_mean, interp_std
 
 # ==============================================================
 # CORE SPECTRAL ANALYSIS FUNCTIONS
@@ -318,114 +441,6 @@ def analyze_spectrum(wl: np.ndarray, counts: np.ndarray) -> FitResult:
                         {'error': str(e)}, fit_success=False)
 
 # ==============================================================
-# ENERGY CALIBRATION FUNCTIONS
-# ==============================================================
-@st.cache_data
-def parse_energy_file(file_content: str, file_type: str, file_bytes: bytes = None) -> Dict[float, Dict]:
-    """Parse energy calibration file with TRANSPOSED format"""
-    energy_map = {}
-    
-    try:
-        if file_bytes and ('xlsx' in str(file_type).lower() or 'xls' in str(file_type).lower()):
-            import io
-            df = pd.read_excel(io.BytesIO(file_bytes), header=None)
-        else:
-            for sep in ['\t', ',', ';', '|']:
-                try:
-                    df = pd.read_csv(StringIO(file_content), sep=sep, header=None)
-                    break
-                except:
-                    continue
-        
-        first_row = df.iloc[0, :]
-        
-        if str(first_row.iloc[0]).lower().replace('_', '').replace(' ', '') in ['qslevel', 'qs', 'qswitch']:
-            qs_levels = []
-            for val in first_row.iloc[1:]:
-                try:
-                    qs_levels.append(float(val))
-                except:
-                    continue
-            
-            for qs in qs_levels:
-                energy_map[qs] = {'readings': []}
-            
-            for row_idx in range(1, len(df)):
-                row = df.iloc[row_idx, :]
-                row_label = str(row.iloc[0]).lower()
-                if not any(x in row_label for x in ['energy', 'e', 'reading', 'measurement']):
-                    continue
-                
-                for col_idx, qs in enumerate(qs_levels):
-                    try:
-                        energy_val = float(row.iloc[col_idx + 1])
-                        if energy_val < 0.1:
-                            energy_val = energy_val * 1000
-                        energy_map[qs]['readings'].append(energy_val)
-                    except:
-                        continue
-            
-            final_map = {}
-            for qs in energy_map:
-                readings = energy_map[qs]['readings']
-                if readings:
-                    final_map[qs] = {
-                        'mean': np.mean(readings), 'std': np.std(readings),
-                        'readings': readings, 'n_readings': len(readings)
-                    }
-            return final_map
-        else:
-            for idx, row in df.iterrows():
-                try:
-                    qs_level = float(row.iloc[0])
-                    energy_readings = []
-                    for val in row.iloc[1:]:
-                        try:
-                            if pd.notna(val) and str(val).strip():
-                                energy_val = float(val)
-                                if energy_val < 0.1:
-                                    energy_val = energy_val * 1000
-                                energy_readings.append(energy_val)
-                        except:
-                            continue
-                    
-                    if energy_readings:
-                        energy_map[qs_level] = {
-                            'mean': np.mean(energy_readings), 'std': np.std(energy_readings),
-                            'readings': energy_readings, 'n_readings': len(energy_readings)
-                        }
-                except:
-                    continue
-            return energy_map
-        
-    except Exception as e:
-        st.error(f"Error parsing energy file: {str(e)}")
-        return {}
-
-def interpolate_energy(qs_value: float, energy_map: Dict[float, Dict]) -> Tuple[float, float]:
-    """Get energy for QS value with interpolation"""
-    if not energy_map or np.isnan(qs_value):
-        return np.nan, np.nan
-    
-    if qs_value in energy_map:
-        return energy_map[qs_value]['mean'], energy_map[qs_value]['std']
-    
-    qs_values = sorted(energy_map.keys())
-    
-    if qs_value < qs_values[0]:
-        return energy_map[qs_values[0]]['mean'], energy_map[qs_values[0]]['std']
-    if qs_value > qs_values[-1]:
-        return energy_map[qs_values[-1]]['mean'], energy_map[qs_values[-1]]['std']
-    
-    energy_means = [energy_map[qs]['mean'] for qs in qs_values]
-    energy_stds = [energy_map[qs]['std'] for qs in qs_values]
-    
-    interp_mean = np.interp(qs_value, qs_values, energy_means)
-    interp_std = np.interp(qs_value, qs_values, energy_stds)
-    
-    return interp_mean, interp_std
-
-# ==============================================================
 # THRESHOLD DETECTION
 # ==============================================================
 def detect_threshold(x_values: np.ndarray, intensities: np.ndarray, min_points: int = 3) -> ThresholdAnalysis:
@@ -491,7 +506,7 @@ def create_spectrum_plot(wl: np.ndarray, counts_raw: np.ndarray, counts_correcte
                                 line=dict(color='lightgray', width=2), opacity=0.5))
     
     fig.add_trace(go.Scatter(x=wl, y=counts_corrected, mode='lines',
-                            name='ND-Corrected Data' if nd_value > 0 else 'Data',
+                            name='OD-Corrected Data' if nd_value > 0 else 'Data',
                             line=dict(color='#2E86AB', width=3)))
     
     if fit_result.fit_success and not np.isnan(fit_result.fwhm):
@@ -517,7 +532,7 @@ def create_spectrum_plot(wl: np.ndarray, counts_raw: np.ndarray, counts_correcte
     if energy_mean is not None and not np.isnan(energy_mean):
         title_html += f"<sub>Pump Energy: {energy_mean:.3f}±{energy_std:.3f} mJ</sub><br>"
     if nd_value > 0:
-        title_html += f"<sub>ND: {nd_value} (×{10**nd_value:.0f})</sub><br>"
+        title_html += f"<sub>OD: {nd_value} (×{10**nd_value:.0f})</sub><br>"
     if fit_result.fit_success:
         title_html += f"<sub>Peak: {fit_result.peak_wavelength:.2f} nm | "
         title_html += f"FWHM: {fit_result.fwhm:.2f} nm | R²: {fit_result.r_squared:.4f}</sub>"
@@ -645,7 +660,7 @@ def create_threshold_plot(df: pd.DataFrame, threshold: ThresholdAnalysis, use_en
     return fig
 
 def create_energy_wavelength_plot(df: pd.DataFrame) -> go.Figure:
-    """Create Energy vs Peak Wavelength plot grouped by sample conditions"""
+    """Create Energy vs Peak Wavelength plot"""
     from scipy.interpolate import make_interp_spline
     
     fig = go.Figure()
@@ -704,6 +719,66 @@ def create_energy_wavelength_plot(df: pd.DataFrame) -> go.Figure:
     
     return fig
 
+def create_energy_intensity_plot(df: pd.DataFrame) -> go.Figure:
+    """Create Energy vs Peak Intensity plot"""
+    from scipy.interpolate import make_interp_spline
+    
+    fig = go.Figure()
+    
+    if 'Pump Energy (mJ)' not in df.columns or df['Pump Energy (mJ)'].isna().all():
+        st.warning("⚠️ Energy calibration data not available")
+        return None
+    
+    if 'Sample Label Short' in df.columns:
+        groups = df.groupby('Sample Label Short')
+        colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', 
+                  '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf']
+        
+        for idx, (label, group_df) in enumerate(groups):
+            if label == "No Label":
+                continue
+            
+            group_df = group_df.dropna(subset=['Pump Energy (mJ)', 'Peak Intensity'])
+            if len(group_df) == 0:
+                continue
+            
+            group_df = group_df.sort_values('Pump Energy (mJ)')
+            x_data = group_df['Pump Energy (mJ)'].values
+            y_data = group_df['Peak Intensity'].values
+            color = colors[idx % len(colors)]
+            
+            if len(x_data) >= 4:
+                try:
+                    spline = make_interp_spline(x_data, y_data, k=min(3, len(x_data)-1))
+                    x_smooth = np.linspace(x_data.min(), x_data.max(), 200)
+                    y_smooth = spline(x_smooth)
+                    fig.add_trace(go.Scatter(x=x_smooth, y=y_smooth, mode='lines',
+                                            line=dict(width=3, color=color),
+                                            name=label, showlegend=True, legendgroup=label))
+                except:
+                    pass
+            
+            fig.add_trace(go.Scatter(
+                x=x_data, y=y_data, mode='markers',
+                marker=dict(size=12, color=color, symbol='circle', line=dict(width=2, color='white')),
+                name=label, showlegend=False, legendgroup=label,
+                error_x=dict(type='data',
+                           array=group_df['Energy Std (mJ)'].values if 'Energy Std (mJ)' in group_df.columns else None,
+                           visible=True if 'Energy Std (mJ)' in group_df.columns else False,
+                           thickness=1.5, width=4),
+                hovertemplate=f'<b>{label}</b><br>Energy: %{{x:.4f}} mJ<br>Peak Intensity: %{{y:.0f}}<br><extra></extra>'
+            ))
+    
+    fig.update_layout(
+        title="<b>Peak Intensity vs Pump Energy</b><br><sub>Grouped by Sample Conditions</sub>",
+        xaxis_title="Pump Energy (mJ)", yaxis_title="Peak Intensity (counts)",
+        template="plotly_white", hovermode="closest", height=600, showlegend=True,
+        legend=dict(title="Sample Conditions", x=1.02, y=1,
+                   bgcolor='rgba(255,255,255,0.8)', bordercolor='black', borderwidth=1)
+    )
+    
+    return fig
+
 def fig_to_image(fig: go.Figure, format: str, width: int, height: int, scale: int) -> bytes:
     """Convert figure to image"""
     try:
@@ -730,10 +805,10 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.markdown('<p class="main-header">🔬 Random Laser Analyzer</p>', unsafe_allow_html=True)
-st.markdown("**Lorentzian fitting • ND/OD correction • Energy calibration • Wavelength analysis**")
+st.markdown("**Lorentzian fitting • OD correction • Energy calibration • Complete analysis suite**")
 
 if not KALEIDO_AVAILABLE:
-    st.warning("⚠️ Image export disabled. Install kaleido: `pip install kaleido`")
+    st.warning("⚠️ Image export disabled. Install: `pip install kaleido`")
 
 with st.sidebar:
     st.header("⚙️ Configuration")
@@ -742,7 +817,7 @@ with st.sidebar:
         skip_rows = st.number_input("Header rows to skip", 0, 100, 38)
         show_individual = st.checkbox("Show individual plots", True)
         show_fit_params = st.checkbox("Show fit parameters", False)
-        apply_nd = st.checkbox("Apply ND/OD correction", True)
+        apply_nd = st.checkbox("Apply OD/ND correction", True)
     
     if KALEIDO_AVAILABLE:
         with st.expander("💾 Export Settings"):
@@ -755,19 +830,20 @@ with st.sidebar:
     st.markdown("### 📊 Features")
     st.markdown("""
     - ✅ Lorentzian fitting
-    - ✅ ND/OD filter correction
+    - ✅ OD/ND correction
     - ✅ Energy calibration
     - ✅ Wavelength vs Energy
-    - ✅ UL/LL layer support
+    - ✅ Intensity vs Energy
     - ✅ Threshold detection
+    - ✅ Sample grouping
     
-    ### 📝 Your Format
-    `UL_5mm_QS_110_10rep_17mgR6G_UL_5%IL_LL_1%IL_OD=2`
+    ### 📝 Filename Format
+    `UL_5mm_QS_110_10rep_17mgR6G_UL_5%IL_LL_1%IL_OD=2.asc`
     
     Extracts:
     - Thickness: `UL_5mm`
     - QS: `QS_110`
-    - Concentrations: `UL_5%IL`, `LL_1%IL`
+    - Conc: `UL_5%IL`, `LL_1%IL`
     - Dye: `17mgR6G`
     - OD: `OD=2`
     """)
@@ -782,14 +858,20 @@ with col1:
 with col2:
     st.subheader("⚡ Energy Calibration")
     
-    with st.expander("📋 Format"):
+    with st.expander("📋 Format (Your Exact Format)"):
         st.markdown("""
+        **Columns A-K, Rows 1-14:**
         ```
-        QS_Level  110      120      130
-        Energy 1  8.2E-06  2.6E-05  6.7E-05
-        Energy 2  9.0E-06  2.5E-05  6.3E-05
-        ...
+        Row 1:  QS levels (200, 190, 180...)
+        Row 2-11: Energy readings (10 measurements)
+        Row 13: Average (optional)
+        Row 14: OD=  0  0  2  2  2...
         ```
+        
+        - Only reads up to column K
+        - Only reads up to row 14
+        - Auto-converts J to mJ
+        - Extracts OD per QS
         """)
     
     energy_file = st.file_uploader("Upload energy file (optional)",
@@ -809,13 +891,27 @@ with col2:
                 
                 if energy_map:
                     energy_df = pd.DataFrame([
-                        {'QS': qs, 'Mean (mJ)': d['mean'], 'Std (mJ)': d['std'], 'N': d['n_readings']}
+                        {
+                            'QS': qs, 
+                            'Mean (mJ)': d['mean'], 
+                            'Std (mJ)': d['std'], 
+                            'N': d['n_readings'],
+                            'OD': d.get('od', 0.0)
+                        }
                         for qs, d in energy_map.items()
-                    ]).sort_values('QS')
+                    ]).sort_values('QS', ascending=False)
                     
                     st.dataframe(energy_df.style.format({
-                        'QS': '{:.0f}', 'Mean (mJ)': '{:.4f}', 'Std (mJ)': '{:.4f}', 'N': '{:.0f}'
+                        'QS': '{:.0f}', 
+                        'Mean (mJ)': '{:.4f}', 
+                        'Std (mJ)': '{:.4f}', 
+                        'N': '{:.0f}',
+                        'OD': '{:.1f}'
                     }))
+                    
+                    if energy_df['OD'].sum() > 0:
+                        st.info(f"📌 **OD Filters** in energy file: "
+                               f"{energy_df[energy_df['OD'] > 0]['OD'].unique()}")
                     
                     fig = go.Figure()
                     fig.add_trace(go.Scatter(
@@ -826,13 +922,15 @@ with col2:
                     fig.update_layout(title="Energy Calibration", xaxis_title="QS Level",
                                      yaxis_title="Energy (mJ)", height=300)
                     st.plotly_chart(fig, use_container_width=True)
+                else:
+                    st.error("Could not parse file")
             except Exception as e:
                 st.error(f"Error: {str(e)}")
     else:
         energy_map = {}
 
 # ==============================================================
-# MAIN PROCESSING (CONTINUATION)
+# MAIN PROCESSING
 # ==============================================================
 if uploaded_files:
     st.markdown("---")
@@ -861,7 +959,7 @@ if uploaded_files:
                     content = file.read().decode(errors='ignore')
                     wl, counts_raw = parse_asc_file(content, skip_rows)
                     
-                    # Metadata extraction
+                    # Metadata
                     qs = extract_qs(filename)
                     nd_value = extract_nd(filename) if apply_nd else 0.0
                     thickness = extract_thickness(filename)
@@ -877,18 +975,18 @@ if uploaded_files:
                     else:
                         energy_mean, energy_std = np.nan, np.nan
                     
-                    # ND correction
+                    # OD correction
                     if nd_value > 0:
                         counts_corrected = apply_nd_correction(counts_raw, nd_value)
                         if show_individual:
-                            st.info(f"🔧 OD/ND={nd_value} correction (×{10**nd_value:.0f})")
+                            st.info(f"🔧 OD={nd_value} correction (×{10**nd_value:.0f})")
                     else:
                         counts_corrected = counts_raw.copy()
                     
                     # Analyze
                     result = analyze_spectrum(wl, counts_corrected)
                     
-                    # Plot individual
+                    # Plot
                     if show_individual:
                         fig = create_spectrum_plot(wl, counts_raw, counts_corrected, result, 
                                                   filename, nd_value, energy_mean, energy_std)
@@ -915,7 +1013,7 @@ if uploaded_files:
                                 c1.metric("Amplitude", f"{result.fit_params.get('Amplitude', 0):.1f}")
                                 c2.metric("Center", f"{result.fit_params.get('Center', 0):.2f}")
                                 c3.metric("Gamma", f"{result.fit_params.get('Gamma', 0):.2f}")
-                                c4.metric("OD/ND", f"{nd_value:.1f}" if nd_value > 0 else "None")
+                                c4.metric("OD", f"{nd_value:.1f}" if nd_value > 0 else "None")
                                 if not np.isnan(energy_mean):
                                     c5.metric("Energy (mJ)", f"{energy_mean:.3f}")
                                 c6.metric("Sample", sample_label_short)
@@ -923,7 +1021,7 @@ if uploaded_files:
                         html = fig.to_html(full_html=False, include_plotlyjs='cdn').encode()
                         html_buffer.writestr(f"{filename.replace('.asc', '')}.html", html)
                     
-                    # Combined plot label
+                    # Combined
                     label = f"QS={qs:.0f}" if not np.isnan(qs) else filename
                     if not np.isnan(energy_mean):
                         label += f" ({energy_mean:.2f}mJ)"
@@ -932,7 +1030,7 @@ if uploaded_files:
                     
                     combined_fig.add_trace(go.Scatter(x=wl, y=counts_corrected, mode='lines', name=label))
                     
-                    # Store summary
+                    # Summary
                     summary_data.append({
                         "File": filename,
                         "Thickness (mm)": thickness,
@@ -945,7 +1043,7 @@ if uploaded_files:
                         "QS Level": qs,
                         "Pump Energy (mJ)": energy_mean,
                         "Energy Std (mJ)": energy_std,
-                        "ND Filter": nd_value,
+                        "OD Filter": nd_value,
                         "Correction Factor": 10**nd_value if nd_value > 0 else 1,
                         "Peak λ (nm)": result.peak_wavelength,
                         "Peak Intensity": result.peak_intensity,
@@ -970,7 +1068,7 @@ if uploaded_files:
     progress_bar.empty()
     
     # ==============================================================
-    # RESULTS SECTION
+    # RESULTS
     # ==============================================================
     
     st.markdown("---")
@@ -986,7 +1084,7 @@ if uploaded_files:
     col1.metric("Files", len(summary_df))
     col2.metric("Avg R²", f"{summary_df['R²'].mean():.3f}")
     col3.metric("Avg FWHM", f"{summary_df['FWHM (nm)'].mean():.2f} nm")
-    col4.metric("OD/ND Corrected", summary_df[summary_df["ND Filter"] > 0].shape[0])
+    col4.metric("OD Corrected", summary_df[summary_df["OD Filter"] > 0].shape[0])
     col5.metric("Energy Cal.", summary_df[summary_df["Pump Energy (mJ)"].notna()].shape[0])
     col6.metric("Conditions", summary_df['Sample Label Short'].nunique())
     
@@ -1023,7 +1121,7 @@ if uploaded_files:
         'QS Level': lambda x: f'{x:.0f}' if not pd.isna(x) else '',
         'Pump Energy (mJ)': lambda x: f'{x:.4f}' if not pd.isna(x) else '',
         'Energy Std (mJ)': lambda x: f'{x:.4f}' if not pd.isna(x) else '',
-        'ND Filter': lambda x: f'{x:.1f}' if x > 0 else '',
+        'OD Filter': lambda x: f'{x:.1f}' if x > 0 else '',
         'Thickness (mm)': lambda x: f'{x:.1f}' if not pd.isna(x) else '',
         'UL Concentration (%)': lambda x: f'{x:.1f}' if not pd.isna(x) else '',
         'LL Concentration (%)': lambda x: f'{x:.1f}' if not pd.isna(x) else '',
@@ -1082,15 +1180,14 @@ if uploaded_files:
         st.markdown("---")
         st.subheader("📈 Peak Wavelength Evolution")
         
-        # Show sample conditions summary
         if 'Sample Label Short' in summary_df.columns:
             unique_conditions = summary_df['Sample Label Short'].unique()
             unique_conditions = [c for c in unique_conditions if c != "No Label"]
             
             if len(unique_conditions) > 0:
-                st.info(f"📊 **Sample Conditions**: {len(unique_conditions)} different conditions detected")
+                st.info(f"📊 **Sample Conditions**: {len(unique_conditions)} detected")
                 
-                with st.expander("🔍 View Sample Conditions Details"):
+                with st.expander("🔍 Sample Conditions Details"):
                     conditions_summary = summary_df[summary_df['Sample Label Short'] != "No Label"].groupby('Sample Label Short').agg({
                         'File': 'count',
                         'Thickness (mm)': 'first',
@@ -1100,30 +1197,26 @@ if uploaded_files:
                         'Pump Energy (mJ)': ['min', 'max'],
                         'Peak λ (nm)': ['min', 'max']
                     }).round(4)
-                    conditions_summary.columns = ['Files', 'Thickness (mm)', 'UL Conc (%)', 'LL Conc (%)', 
-                                                 'Dye (mg)', 'Min Energy (mJ)', 'Max Energy (mJ)',
-                                                 'Min λ (nm)', 'Max λ (nm)']
+                    conditions_summary.columns = ['Files', 'Thickness', 'UL%', 'LL%', 
+                                                 'Dye(mg)', 'E min', 'E max', 'λ min', 'λ max']
                     st.dataframe(conditions_summary)
         
-        # Create plot
         energy_wl_fig = create_energy_wavelength_plot(summary_df)
         
         if energy_wl_fig:
             st.plotly_chart(energy_wl_fig, use_container_width=True)
             
-            # Download
             if KALEIDO_AVAILABLE:
                 col1, col2, col3 = st.columns([2, 1, 2])
                 with col2:
                     try:
                         img = fig_to_image(energy_wl_fig, image_format, image_width, image_height, image_scale)
-                        st.download_button(f"📥 Energy-Wavelength ({image_format.upper()})", img,
+                        st.download_button(f"📥 Energy-λ ({image_format.upper()})", img,
                                           f"energy_wavelength.{image_format}", f"image/{image_format}",
-                                          key="dl_energy_wl")
-                    except Exception as e:
-                        st.error(f"Export failed: {e}")
+                                          key="dl_e_wl")
+                    except:
+                        pass
             
-            # Statistics
             with st.expander("📊 Wavelength Shift Statistics"):
                 if 'Sample Label Short' in summary_df.columns:
                     for label in summary_df['Sample Label Short'].unique():
@@ -1139,26 +1232,51 @@ if uploaded_files:
                             
                             st.markdown(f"**{label}**")
                             col1, col2, col3 = st.columns(3)
-                            col1.metric("λ Range", f"{min_wl:.2f} - {max_wl:.2f} nm")
-                            col2.metric("Total Shift", f"{shift:.2f} nm")
-                            col3.metric("Data Points", len(group))
-                            
-                            # Show full label
-                            full_label = group['Sample Label'].iloc[0]
-                            with st.expander(f"Full Info: {label}"):
-                                st.info(full_label)
-                else:
-                    # Single condition
-                    group = summary_df.dropna(subset=['Pump Energy (mJ)', 'Peak λ (nm)'])
-                    if len(group) > 1:
-                        min_wl = group['Peak λ (nm)'].min()
-                        max_wl = group['Peak λ (nm)'].max()
-                        shift = max_wl - min_wl
+                            col1.metric("λ Range", f"{min_wl:.2f}-{max_wl:.2f} nm")
+                            col2.metric("Shift", f"{shift:.2f} nm")
+                            col3.metric("Points", len(group))
+    
+    # ==============================================================
+    # ENERGY VS PEAK INTENSITY PLOT
+    # ==============================================================
+    if 'Pump Energy (mJ)' in summary_df.columns and summary_df['Pump Energy (mJ)'].notna().sum() > 2:
+        st.markdown("---")
+        st.subheader("💡 Peak Intensity Evolution")
+        
+        energy_int_fig = create_energy_intensity_plot(summary_df)
+        
+        if energy_int_fig:
+            st.plotly_chart(energy_int_fig, use_container_width=True)
+            
+            if KALEIDO_AVAILABLE:
+                col1, col2, col3 = st.columns([2, 1, 2])
+                with col2:
+                    try:
+                        img = fig_to_image(energy_int_fig, image_format, image_width, image_height, image_scale)
+                        st.download_button(f"📥 Energy-Intensity ({image_format.upper()})", img,
+                                          f"energy_intensity.{image_format}", f"image/{image_format}",
+                                          key="dl_e_int")
+                    except:
+                        pass
+            
+            with st.expander("📊 Intensity Growth Statistics"):
+                if 'Sample Label Short' in summary_df.columns:
+                    for label in summary_df['Sample Label Short'].unique():
+                        if label == "No Label":
+                            continue
                         
-                        col1, col2, col3 = st.columns(3)
-                        col1.metric("λ Range", f"{min_wl:.2f} - {max_wl:.2f} nm")
-                        col2.metric("Total Shift", f"{shift:.2f} nm")
-                        col3.metric("Data Points", len(group))
+                        group = summary_df[summary_df['Sample Label Short'] == label].dropna(
+                            subset=['Pump Energy (mJ)', 'Peak Intensity'])
+                        if len(group) > 1:
+                            min_int = group['Peak Intensity'].min()
+                            max_int = group['Peak Intensity'].max()
+                            growth = max_int / min_int if min_int > 0 else 0
+                            
+                            st.markdown(f"**{label}**")
+                            col1, col2, col3 = st.columns(3)
+                            col1.metric("Range", f"{min_int:.0f}-{max_int:.0f}")
+                            col2.metric("Growth", f"{growth:.1f}×")
+                            col3.metric("Points", len(group))
     
     # Downloads
     st.markdown("---")
@@ -1172,7 +1290,7 @@ if uploaded_files:
                           "text/csv", use_container_width=True)
     
     with cols[1]:
-        st.download_button("📦 HTML Plots", plot_zip.getvalue(),
+        st.download_button("📦 HTML", plot_zip.getvalue(),
                           f"plots_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip",
                           "application/zip", use_container_width=True)
     
@@ -1182,7 +1300,8 @@ if uploaded_files:
             summary_df.to_excel(writer, sheet_name='Results', index=False)
             if energy_map:
                 energy_cal_df = pd.DataFrame([
-                    {'QS': qs, 'Mean (mJ)': d['mean'], 'Std (mJ)': d['std'], 'N': d['n_readings']}
+                    {'QS': qs, 'Mean (mJ)': d['mean'], 'Std (mJ)': d['std'], 
+                     'N': d['n_readings'], 'OD': d.get('od', 0.0)}
                     for qs, d in energy_map.items()
                 ]).sort_values('QS')
                 energy_cal_df.to_excel(writer, sheet_name='Energy Cal', index=False)
@@ -1193,67 +1312,54 @@ if uploaded_files:
     
     if KALEIDO_AVAILABLE and image_zip:
         with cols[3]:
-            st.download_button(f"🖼️ Images ({image_format.upper()})", image_zip.getvalue(),
+            st.download_button(f"🖼️ Images", image_zip.getvalue(),
                               f"images_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip",
                               "application/zip", use_container_width=True)
 
 else:
-    # Welcome screen
+    # Welcome
     st.info("👆 Upload .asc files to begin")
     
     with st.expander("📖 Instructions"):
         st.markdown("""
         ### Quick Start
         1. Upload .asc spectrum files
-        2. Optionally upload energy calibration file
+        2. Upload energy calibration file (optional)
         3. View automated analysis
         4. Download results
         
         ### Your Filename Format
-        `UL_5mm_QS_110_10rep_17mgR6G_UL_5%IL_LL_1%IL_SD_00degDA_0_OD=2.asc`
+        `UL_5mm_QS_110_10rep_17mgR6G_UL_5%IL_LL_1%IL_OD=2.asc`
         
-        **Automatically extracts:**
-        - **Thickness**: `UL_5mm` → 5.0 mm
-        - **Q-Switch**: `QS_110` → 110
-        - **Upper Layer Conc**: `UL_5%IL` → 5.0%
-        - **Lower Layer Conc**: `LL_1%IL` → 1.0%
-        - **Dye Amount**: `17mgR6G` → 17.0 mg
-        - **Repetitions**: `10rep` → 10
-        - **OD/ND Filter**: `OD=2` → 2.0 (×100 correction)
+        **Auto-extracts:**
+        - Thickness: `UL_5mm` → 5mm
+        - QS: `QS_110` → 110
+        - UL Conc: `UL_5%IL` → 5%
+        - LL Conc: `LL_1%IL` → 1%
+        - Dye: `17mgR6G` → 17mg
+        - OD: `OD=2` → 2 (×100)
         
         ### Energy File Format
-        **Transposed Excel/CSV:**
+        **Your exact format (columns A-K, rows 1-14):**
         ```
-        QS_Level  110      120      130
-        Energy 1  8.2E-06  2.6E-05  6.7E-05
-        Energy 2  9.0E-06  2.5E-05  6.3E-05
-        ...
-        Energy 10 8.1E-06  2.7E-05  7.0E-05
+        Row 1:    200    190    180    170
+        Row 2-11: (10 energy measurements)
+        Row 13:   (average - optional)
+        Row 14:   OD=  0  0  2  2
         ```
-        - Values in Joules auto-convert to mJ
-        - Scientific notation supported
         
-        ### Features
-        - **Lorentzian Fitting**: Automated peak finding and FWHM calculation
-        - **ND/OD Correction**: Automatic intensity correction (multiply by 10^OD)
-        - **Energy Calibration**: Use real pump energies with error bars
-        - **Sample Grouping**: Plot different thickness/concentration combinations
-        - **Wavelength Evolution**: See how peak wavelength changes with pump energy
-        - **Threshold Detection**: Automatic lasing threshold identification
-        - **Export Options**: CSV, Excel, HTML plots, high-quality images
+        ### Plots Generated
+        - **Combined Spectra**: All overlaid
+        - **Threshold Dashboard**: 4-panel analysis
+        - **Energy vs Wavelength**: Peak shifts
+        - **Energy vs Intensity**: Growth curves
         
-        ### Plot Color Coding
-        - Different **colors** = different sample conditions (thickness + concentration)
-        - **Smooth curves** = spline interpolation
-        - **Error bars** = pump energy measurement uncertainty
-        - **Interactive** = zoom, pan, hover for details
+        All grouped by sample conditions with smooth curves!
         """)
 
-# Footer
 st.markdown("---")
 st.markdown("""
 <div style='text-align: center; color: #666;'>
 📧 varun.solanki@fau.de | Friedrich-Alexander-Universität Erlangen-Nürnberg
 </div>
 """, unsafe_allow_html=True)
-
