@@ -193,7 +193,7 @@ def apply_nd_correction(counts: np.ndarray, nd_value: float) -> np.ndarray:
     return counts * correction_factor
 
 # ==============================================================
-# ENERGY CALIBRATION FUNCTIONS (FOR YOUR EXACT FORMAT)
+# ENERGY CALIBRATION FUNCTIONS (FIXED VERSION)
 # ==============================================================
 @st.cache_data
 def parse_energy_file(file_content: str, file_type: str, file_bytes: bytes = None) -> Dict[float, Dict]:
@@ -210,22 +210,37 @@ def parse_energy_file(file_content: str, file_type: str, file_bytes: bytes = Non
     Only reads up to column K (11 columns) and row 14
     """
     energy_map = {}
+    df = None  # Initialize df
     
     try:
         # Read file (limit to first 14 rows and 11 columns)
         if file_bytes and ('xlsx' in str(file_type).lower() or 'xls' in str(file_type).lower()):
-            import io
-            df = pd.read_excel(io.BytesIO(file_bytes), header=None, nrows=14, usecols=range(11))
+            try:
+                import io
+                df = pd.read_excel(io.BytesIO(file_bytes), header=None, nrows=14)
+                # Limit to 11 columns if more exist
+                if df.shape[1] > 11:
+                    df = df.iloc[:, :11]
+            except Exception as e:
+                st.error(f"Excel read error: {str(e)}")
+                return {}
         else:
+            # Try different separators for text files
             for sep in ['\t', ',', ';', '|']:
                 try:
-                    df = pd.read_csv(StringIO(file_content), sep=sep, header=None, nrows=14, usecols=range(11))
-                    break
-                except:
+                    df = pd.read_csv(StringIO(file_content), sep=sep, header=None, nrows=14)
+                    # Limit to 11 columns
+                    if df.shape[1] > 11:
+                        df = df.iloc[:, :11]
+                    # If we got a valid dataframe, break
+                    if df is not None and not df.empty:
+                        break
+                except Exception:
                     continue
         
-        if df.empty:
-            st.error("Could not read energy file")
+        # Check if df was successfully created
+        if df is None or df.empty:
+            st.error("❌ Could not read energy file. Check file format.")
             return {}
         
         # Row 1 (index 0): QS levels
@@ -235,28 +250,35 @@ def parse_energy_file(file_content: str, file_type: str, file_bytes: bytes = Non
         qs_levels = []
         start_col = 0
         
+        # Check if first cell is a number or label
         try:
             float(first_row.iloc[0])
             start_col = 0
         except:
             start_col = 1
         
+        # Extract QS levels from first row
         for val in first_row.iloc[start_col:]:
             try:
-                if pd.notna(val):
-                    qs_levels.append(float(val))
+                if pd.notna(val) and val != '':
+                    qs_val = float(val)
+                    qs_levels.append(qs_val)
             except:
                 continue
         
         if not qs_levels:
-            st.error("Could not find QS levels in first row")
+            st.error("❌ Could not find QS levels in first row of energy file")
+            st.info("First row should contain QS values like: 200, 190, 180, 170...")
             return {}
+        
+        st.success(f"✅ Found {len(qs_levels)} QS levels: {qs_levels}")
         
         # Initialize storage
         for qs in qs_levels:
             energy_map[qs] = {'readings': [], 'od': 0.0}
         
         # Read energy readings from rows 2-11 (indices 1-10)
+        readings_found = 0
         for row_idx in range(1, min(11, len(df))):
             row = df.iloc[row_idx, :]
             
@@ -268,8 +290,11 @@ def parse_energy_file(file_content: str, file_type: str, file_bytes: bytes = Non
                         if energy_val < 0.1:
                             energy_val = energy_val * 1000
                         energy_map[qs]['readings'].append(energy_val)
+                        readings_found += 1
                 except:
                     continue
+        
+        st.info(f"📊 Extracted {readings_found} energy readings from rows 2-11")
         
         # Read average from row 13 (index 12) - optional
         if len(df) > 12:
@@ -288,6 +313,7 @@ def parse_energy_file(file_content: str, file_type: str, file_bytes: bytes = Non
                 pass
         
         # Read OD values from row 14 (index 13)
+        od_found = 0
         if len(df) > 13:
             try:
                 od_row = df.iloc[13, :]
@@ -303,10 +329,15 @@ def parse_energy_file(file_content: str, file_type: str, file_bytes: bytes = Non
                         od_val = float(od_row.iloc[start_col_od + col_idx])
                         if pd.notna(od_val):
                             energy_map[qs]['od'] = float(od_val)
+                            if od_val > 0:
+                                od_found += 1
                     except:
                         pass
-            except:
-                pass
+                
+                if od_found > 0:
+                    st.info(f"🔍 Found OD values for {od_found} QS levels in row 14")
+            except Exception as e:
+                st.warning(f"Could not read OD values from row 14: {str(e)}")
         
         # Calculate statistics
         final_map = {}
@@ -322,37 +353,23 @@ def parse_energy_file(file_content: str, file_type: str, file_bytes: bytes = Non
                     'file_avg': energy_map[qs].get('file_avg', np.mean(readings))
                 }
         
+        if not final_map:
+            st.error("❌ No valid energy data found")
+            return {}
+        
+        st.success(f"✅ Successfully parsed energy data for {len(final_map)} QS levels")
         return final_map
         
     except Exception as e:
-        st.error(f"Error parsing energy file: {str(e)}")
+        st.error(f"❌ Error parsing energy file: {str(e)}")
         import traceback
-        st.error(traceback.format_exc())
+        with st.expander("🐛 Debug Info"):
+            st.code(traceback.format_exc())
+            if df is not None:
+                st.write("**DataFrame shape:**", df.shape)
+                st.write("**First 5 rows:**")
+                st.dataframe(df.head())
         return {}
-
-def interpolate_energy(qs_value: float, energy_map: Dict[float, Dict]) -> Tuple[float, float]:
-    """Get energy for QS value with interpolation"""
-    if not energy_map or np.isnan(qs_value):
-        return np.nan, np.nan
-    
-    if qs_value in energy_map:
-        return energy_map[qs_value]['mean'], energy_map[qs_value]['std']
-    
-    qs_values = sorted(energy_map.keys())
-    
-    if qs_value < qs_values[0]:
-        return energy_map[qs_values[0]]['mean'], energy_map[qs_values[0]]['std']
-    if qs_value > qs_values[-1]:
-        return energy_map[qs_values[-1]]['mean'], energy_map[qs_values[-1]]['std']
-    
-    energy_means = [energy_map[qs]['mean'] for qs in qs_values]
-    energy_stds = [energy_map[qs]['std'] for qs in qs_values]
-    
-    interp_mean = np.interp(qs_value, qs_values, energy_means)
-    interp_std = np.interp(qs_value, qs_values, energy_stds)
-    
-    return interp_mean, interp_std
-
 # ==============================================================
 # CORE SPECTRAL ANALYSIS FUNCTIONS
 # ==============================================================
@@ -878,18 +895,30 @@ with col2:
                                    type=['csv', 'txt', 'tsv', 'xlsx', 'xls'], key="energy_file")
     
     if energy_file:
-        with st.expander("📊 Preview", expanded=False):
+        with st.expander("📊 Preview Energy Data", expanded=True):  # Changed to expanded=True
             try:
                 file_bytes = energy_file.read()
                 energy_file.seek(0)
                 
+                # Show file info
+                st.info(f"📄 **File:** {energy_file.name} | **Size:** {len(file_bytes)} bytes")
+                
                 if energy_file.name.endswith(('.xlsx', '.xls')):
+                    st.info("📊 Reading Excel file...")
                     energy_map = parse_energy_file(None, energy_file.type, file_bytes)
                 else:
+                    st.info("📄 Reading text file...")
                     energy_content = file_bytes.decode(errors='ignore')
+                    # Show first few lines for debugging
+                    with st.expander("🔍 First 5 lines of file"):
+                        lines = energy_content.split('\n')[:5]
+                        for i, line in enumerate(lines, 1):
+                            st.code(f"Row {i}: {line}")
                     energy_map = parse_energy_file(energy_content, energy_file.type, file_bytes)
                 
                 if energy_map:
+                    st.success(f"✅ Loaded {len(energy_map)} QS levels")
+                    
                     energy_df = pd.DataFrame([
                         {
                             'QS': qs, 
@@ -907,25 +936,59 @@ with col2:
                         'Std (mJ)': '{:.4f}', 
                         'N': '{:.0f}',
                         'OD': '{:.1f}'
-                    }))
+                    }), use_container_width=True)
                     
+                    # Show OD info
                     if energy_df['OD'].sum() > 0:
-                        st.info(f"📌 **OD Filters** in energy file: "
-                               f"{energy_df[energy_df['OD'] > 0]['OD'].unique()}")
+                        unique_ods = energy_df[energy_df['OD'] > 0]['OD'].unique()
+                        st.success(f"🔍 **OD Filters detected:** {', '.join([f'OD={od}' for od in unique_ods])}")
+                    else:
+                        st.info("ℹ️ No OD filters specified in energy file (all OD=0)")
                     
+                    # Plot
                     fig = go.Figure()
                     fig.add_trace(go.Scatter(
-                        x=energy_df['QS'], y=energy_df['Mean (mJ)'],
+                        x=energy_df['QS'], 
+                        y=energy_df['Mean (mJ)'],
                         error_y=dict(type='data', array=energy_df['Std (mJ)'], visible=True),
-                        mode='markers+lines', marker=dict(size=10, color='blue')
+                        mode='markers+lines', 
+                        marker=dict(size=10, color='blue'),
+                        line=dict(width=2)
                     ))
-                    fig.update_layout(title="Energy Calibration", xaxis_title="QS Level",
-                                     yaxis_title="Energy (mJ)", height=300)
+                    fig.update_layout(
+                        title="Energy Calibration Curve",
+                        xaxis_title="QS Level",
+                        yaxis_title="Pump Energy (mJ)",
+                        template="plotly_white",
+                        height=400
+                    )
                     st.plotly_chart(fig, use_container_width=True)
                 else:
-                    st.error("Could not parse file")
+                    st.error("❌ Failed to parse energy file")
+                    st.markdown("""
+                    ### Expected Format:
+                    - **Row 1:** QS levels (e.g., 200, 190, 180, 170, 160, 150...)
+                    - **Rows 2-11:** Energy measurements (10 readings per QS)
+                    - **Row 13:** Average (optional)
+                    - **Row 14:** OD= followed by OD values
+                    
+                    ### Example:
+                    ```
+                    	200	    190	    180	    170
+                    	7.48E-06	2.28E-05	5.24E-05	1.19E-04
+                    	6.01E-06	2.46E-05	5.80E-05	1.12E-04
+                    	...
+                    	(8 more rows)
+                    		
+                    	7.57E-06	2.54E-05	5.82E-05	1.22E-04
+                    OD=	0	    0	    2	    2
+                    ```
+                    """)
             except Exception as e:
-                st.error(f"Error: {str(e)}")
+                st.error(f"❌ Error reading energy file: {str(e)}")
+                import traceback
+                with st.expander("🐛 Full Error Details"):
+                    st.code(traceback.format_exc())
     else:
         energy_map = {}
 
@@ -1363,3 +1426,4 @@ st.markdown("""
 📧 varun.solanki@fau.de | Friedrich-Alexander-Universität Erlangen-Nürnberg
 </div>
 """, unsafe_allow_html=True)
+
