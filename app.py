@@ -212,60 +212,192 @@ def apply_nd_correction(counts: np.ndarray, nd_value: float) -> np.ndarray:
 # ==============================================================
 
 @st.cache_data
-def parse_energy_file_simple(text: str) -> dict:
+def parse_energy_file(file_content: str, file_type: str, file_bytes: bytes = None) -> Dict[float, Dict]:
     """
-    Parse a simple energy table like:
+    Parse energy calibration file - SMART PARSER
 
-        200 190 180 ... 110
-        7.48E-06 ...
-        ...
-        (10 rows of readings)
-        mean-row (optional)
-        OD-row (optional)
+    Automatically finds the row with QS levels (e.g. 200, 190, 180...)
+    Works with your 'UL_5mm_pulse energy.xlsx' file.
     """
+    energy_map: Dict[float, Dict] = {}
 
-    from io import StringIO
+    st.info("🔄 Starting smart energy file parsing...")
 
-    # Load as CSV/TSV by detecting whitespace or tab
-    df = pd.read_csv(
-        StringIO(text),
-        sep=r"\s+",
-        engine="python",
-        header=None
-    )
+    try:
+        import io
 
-    # First row = QS levels
-    qs_levels = df.iloc[0].dropna().astype(float).tolist()
-    n_qs = len(qs_levels)
+        df = None
 
-    # Energy readings = next 10 rows
-    readings = df.iloc[1:11, :n_qs].astype(float)
+        # ----------------------------------------------------------
+        # STEP 1: READ FILE (Excel or text)
+        # ----------------------------------------------------------
+        if file_bytes:
+            # Try Excel first
+            try:
+                df = pd.read_excel(io.BytesIO(file_bytes), header=None, engine='openpyxl')
+                st.success(f"✅ Loaded Excel: {df.shape[0]} rows × {df.shape[1]} cols")
+            except Exception:
+                # Try CSV/TSV fallback
+                try:
+                    content = file_bytes.decode('utf-8', errors='ignore')
+                    for sep in ['\t', ',', ';']:
+                        try:
+                            df_tmp = pd.read_csv(StringIO(content), sep=sep, header=None)
+                            if df_tmp.shape[1] > 1:
+                                df = df_tmp
+                                st.success(f"✅ Loaded text file with separator '{sep}': {df.shape}")
+                                break
+                        except Exception:
+                            continue
+                except Exception:
+                    pass
 
-    # Optional mean and OD
-    od_row = None
-    if df.shape[0] > 12:
-        possible_od = df.iloc[-1]
-        if any("2" in str(x) or "0" in str(x) for x in possible_od):
-            od_row = pd.to_numeric(possible_od[:n_qs], errors="coerce")
+        if df is None or df.empty:
+            st.error("❌ Could not read energy file (empty or unreadable)")
+            return {}
 
-    # Build map
-    energy_map = {}
-    for i, qs in enumerate(qs_levels):
-        vals = readings.iloc[:, i].dropna().astype(float)
+        # Optional preview for debugging
+        with st.expander("👀 Raw Energy File (first 15 rows)", expanded=False):
+            st.dataframe(df.head(15))
 
-        # Convert J → mJ
-        vals_mJ = vals * 1000
+        # ----------------------------------------------------------
+        # STEP 2: FIND ROW WITH QS LEVELS
+        # ----------------------------------------------------------
+        st.info("🔍 Searching for QS level row (e.g., 200, 190, 180...)")
 
-        energy_map[qs] = {
-            "mean": vals_mJ.mean(),
-            "std": vals_mJ.std(),
-            "readings": vals_mJ.tolist(),
-            "n_readings": len(vals_mJ),
-            "od": float(od_row[i]) if od_row is not None else 0.0,
-        }
+        qs_row_index = -1
+        qs_levels: list[float] = []
+        start_col = 0
 
-    return energy_map
+        # Look in first 10 rows for "nice" QS numbers
+        for r in range(min(10, df.shape[0])):
+            row_values = df.iloc[r, :].tolist()
+            candidates = []
+            candidate_idx = []
 
+            for c, val in enumerate(row_values):
+                try:
+                    if pd.notna(val):
+                        num = float(val)
+                        # typical QS pattern: multiples of 10 between 100 and 500
+                        if 100 <= num <= 500 and num % 10 == 0:
+                            candidates.append(num)
+                            candidate_idx.append(c)
+                except Exception:
+                    continue
+
+            if len(candidates) >= 3:
+                qs_levels = candidates
+                qs_row_index = r
+                start_col = candidate_idx[0]
+                break
+
+        if qs_row_index == -1:
+            st.error("❌ Could not detect QS header row (no 200/190/... pattern found in first 10 rows)")
+            st.write("First 5 rows of file:")
+            st.dataframe(df.head(5))
+            return {}
+
+        st.success(f"✅ QS header found in row {qs_row_index + 1} (0-based index {qs_row_index})")
+        st.write(f"QS levels detected: {qs_levels}")
+        st.write(f"First QS column index: {start_col}")
+
+        # Initialize map entries for each QS
+        for qs in qs_levels:
+            energy_map[qs] = {'readings': [], 'od': 0.0}
+
+        # ----------------------------------------------------------
+        # STEP 3: EXTRACT ENERGY READINGS
+        # ----------------------------------------------------------
+        st.info("📊 Extracting energy readings below QS row...")
+
+        data_start_row = qs_row_index + 1
+        data_end_row = min(data_start_row + 10, df.shape[0])  # up to 10 rows of readings
+
+        readings_found = 0
+
+        for r in range(data_start_row, data_end_row):
+            row = df.iloc[r, :]
+
+            for i, qs in enumerate(qs_levels):
+                col_idx = start_col + i
+                if col_idx >= df.shape[1]:
+                    continue
+
+                try:
+                    val = row.iloc[col_idx]
+                    if pd.notna(val):
+                        energy = float(val)
+                        # Convert J to mJ if < 0.1 J
+                        if energy < 0.1:
+                            energy *= 1000.0
+                        energy_map[qs]['readings'].append(energy)
+                        readings_found += 1
+                except Exception:
+                    continue
+
+        if readings_found == 0:
+            st.error("❌ No numeric energy readings found under QS row")
+            return {}
+
+        st.success(f"✅ Extracted {readings_found} energy readings in total")
+
+        # ----------------------------------------------------------
+        # STEP 4: FIND OD VALUES (OPTIONAL)
+        # ----------------------------------------------------------
+        od_row_index = -1
+
+        for r in range(data_end_row, min(data_end_row + 5, df.shape[0])):
+            row_str = str(df.iloc[r, :].values).upper()
+            if 'OD' in row_str or 'ND' in row_str:
+                od_row_index = r
+                break
+
+        if od_row_index != -1:
+            st.info(f"🔍 Found possible OD row at {od_row_index + 1}")
+            od_row = df.iloc[od_row_index, :]
+
+            od_start_col = start_col
+            for i, qs in enumerate(qs_levels):
+                col_idx = od_start_col + i
+                if col_idx >= df.shape[1]:
+                    continue
+                try:
+                    val = od_row.iloc[col_idx]
+                    if pd.notna(val):
+                        od_val = float(val)
+                        energy_map[qs]['od'] = od_val
+                except Exception:
+                    continue
+        else:
+            st.info("ℹ️ No OD row found (all OD set to 0.0)")
+
+        # ----------------------------------------------------------
+        # STEP 5: SUMMARY / FINAL MAP
+        # ----------------------------------------------------------
+        final_map: Dict[float, Dict] = {}
+        for qs, data in energy_map.items():
+            readings = data['readings']
+            if readings:
+                arr = np.array(readings, dtype=float)
+                final_map[qs] = {
+                    'mean': float(arr.mean()),
+                    'std': float(arr.std()),
+                    'readings': readings,
+                    'n_readings': int(len(readings)),
+                    'od': float(data['od']),
+                }
+
+        if not final_map:
+            st.error("❌ No valid QS entries with readings after processing")
+            return {}
+
+        st.success(f"✅ Energy calibration parsed for {len(final_map)} QS levels")
+        return final_map
+
+    except Exception as e:
+        st.error(f"❌ Error parsing energy file: {str(e)}")
+        return {}
 
 
 def interpolate_energy(qs_value: float, energy_map: Dict[float, Dict]) -> Tuple[float, float]:
