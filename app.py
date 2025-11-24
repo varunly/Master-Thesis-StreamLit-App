@@ -1,6 +1,6 @@
 # ==============================================================
 # Streamlit App: Random Laser ASC Analyzer
-# Complete Version with ND Correction, Energy Calibration & All Plots
+# Complete Version with Manual Energy Entry, ND Correction & All Plots
 # ==============================================================
 import streamlit as st
 import pandas as pd
@@ -193,189 +193,43 @@ def apply_nd_correction(counts: np.ndarray, nd_value: float) -> np.ndarray:
     return counts * correction_factor
 
 # ==============================================================
-# ENERGY CALIBRATION FUNCTIONS (SMART PARSER)
+# ENERGY CALIBRATION FUNCTIONS (MANUAL ENTRY)
 # ==============================================================
-@st.cache_data
-def parse_energy_file(file_content: str, file_type: str, file_bytes: bytes = None) -> Dict[float, Dict]:
+def interpolate_energy(qs_value: float, energy_map: Dict[float, Dict]) -> Tuple[float, float]:
     """
-    Parse energy calibration file - SMART PARSER
-    Automatically finds the row with QS levels (200, 190, 180...)
+    Interpolate energy for a given QS value using the calibration map.
+    Returns (mean_energy, std_energy)
     """
-    energy_map = {}
+    if not energy_map:
+        return np.nan, np.nan
     
-    st.info("🔄 Starting smart energy file parsing...")
+    qs_levels = sorted(energy_map.keys())
     
-    try:
-        # ============================================================
-        # STEP 1: READ THE FILE
-        # ============================================================
-        import io
-        df = None
-        
-        if file_bytes:
-            # Try Excel read
-            try:
-                df = pd.read_excel(io.BytesIO(file_bytes), header=None, engine='openpyxl')
-                st.success(f"✅ Loaded Excel: {df.shape}")
-            except:
-                try:
-                    # Try CSV
-                    content = file_bytes.decode('utf-8', errors='ignore')
-                    for sep in ['\t', ',', ';']:
-                        df_temp = pd.read_csv(StringIO(content), sep=sep, header=None)
-                        if df_temp.shape[1] > 1:
-                            df = df_temp
-                            break
-                except:
-                    pass
-        
-        if df is None or df.empty:
-            st.error("❌ Could not read file")
-            return {}
+    # Exact match
+    if qs_value in energy_map:
+        return energy_map[qs_value]['mean'], energy_map[qs_value]['std']
+    
+    # Out of range - use nearest value
+    if qs_value < min(qs_levels) or qs_value > max(qs_levels):
+        nearest_qs = min(qs_levels, key=lambda x: abs(x - qs_value))
+        return energy_map[nearest_qs]['mean'], energy_map[nearest_qs]['std']
+    
+    # Linear interpolation between two closest points
+    for i in range(len(qs_levels) - 1):
+        if qs_levels[i] <= qs_value <= qs_levels[i+1]:
+            qs1, qs2 = qs_levels[i], qs_levels[i+1]
+            e1, e2 = energy_map[qs1]['mean'], energy_map[qs2]['mean']
+            std1, std2 = energy_map[qs1]['std'], energy_map[qs2]['std']
             
-        # ============================================================
-        # STEP 2: FIND THE ROW WITH QS LEVELS
-        # ============================================================
-        st.info("🔍 Searching for QS levels (200, 190, 180...)...")
-        
-        qs_row_index = -1
-        qs_levels = []
-        start_col = 0
-        
-        # Search first 10 rows for QS-like sequence
-        for r in range(min(10, df.shape[0])):
-            row_values = df.iloc[r, :].tolist()
+            # Linear interpolation
+            t = (qs_value - qs1) / (qs2 - qs1)
+            mean_interp = e1 + t * (e2 - e1)
+            std_interp = std1 + t * (std2 - std1)
             
-            # Look for numeric values > 100 (likely QS levels)
-            candidates = []
-            candidate_indices = []
-            
-            for c, val in enumerate(row_values):
-                try:
-                    if pd.notna(val):
-                        num = float(val)
-                        # QS levels are usually integers like 200, 190, 110
-                        if num >= 100 and num <= 500 and num % 10 == 0:
-                            candidates.append(num)
-                            candidate_indices.append(c)
-                except:
-                    continue
-            
-            # If we found at least 3 valid QS values, assume this is the header row
-            if len(candidates) >= 3:
-                qs_levels = candidates
-                qs_row_index = r
-                # Determine start column (is the first column a label?)
-                if candidate_indices[0] > 0:
-                    start_col = candidate_indices[0]
-                else:
-                    start_col = 0
-                
-                st.success(f"✅ Found QS levels in Row {r+1}: {qs_levels}")
-                break
-        
-        if qs_row_index == -1:
-            st.error("❌ Could not find QS levels (200, 190, etc.) in the first 10 rows")
-            st.write("First 5 rows of your file:")
-            st.dataframe(df.head(5))
-            return {}
-            
-        # ============================================================
-        # STEP 3: EXTRACT ENERGY READINGS
-        # ============================================================
-        st.info(f"📊 Extracting energy readings below Row {qs_row_index+1}...")
-        
-        # Initialize map
-        for qs in qs_levels:
-            energy_map[qs] = {'readings': [], 'od': 0.0}
-            
-        # Read next 10 rows as energy readings
-        readings_found = 0
-        data_start_row = qs_row_index + 1
-        data_end_row = min(data_start_row + 10, df.shape[0])
-        
-        for r in range(data_start_row, data_end_row):
-            row = df.iloc[r, :]
-            
-            for i, qs in enumerate(qs_levels):
-                col_idx = start_col + i
-                if col_idx < df.shape[1]:
-                    try:
-                        val = row.iloc[col_idx]
-                        if pd.notna(val):
-                            energy = float(val)
-                            # Convert J to mJ if < 0.1
-                            if energy < 0.1:
-                                energy *= 1000
-                            energy_map[qs]['readings'].append(energy)
-                            readings_found += 1
-                    except:
-                        continue
-        
-        if readings_found == 0:
-            st.error("❌ No energy readings found below QS row")
-            return {}
-            
-        st.success(f"✅ Extracted {readings_found} energy readings")
-        
-        # ============================================================
-        # STEP 4: FIND OD VALUES (ROW WITH 'OD' or 'ND')
-        # ============================================================
-        od_row_index = -1
-        
-        # Search rows below data for "OD" label
-        for r in range(data_end_row, min(data_end_row + 5, df.shape[0])):
-            row_str = str(df.iloc[r, :].values).upper()
-            if 'OD' in row_str or 'ND' in row_str:
-                od_row_index = r
-                st.info(f"🔍 Found OD values in Row {r+1}")
-                break
-        
-        if od_row_index != -1:
-            od_row = df.iloc[od_row_index, :]
-            
-            # Determine offset for OD values
-            # Sometimes OD values align with QS columns, sometimes shifted
-            od_start_col = start_col
-            
-            # Check if first cell has label "OD="
-            first_cell = str(od_row.iloc[0]).upper()
-            if 'OD' in first_cell or 'ND' in first_cell:
-                # If label is in col 0, data might start in col 1
-                # But check alignment
-                pass
-            
-            for i, qs in enumerate(qs_levels):
-                col_idx = od_start_col + i
-                if col_idx < df.shape[1]:
-                    try:
-                        val = od_row.iloc[col_idx]
-                        if pd.notna(val):
-                            od = float(val)
-                            energy_map[qs]['od'] = od
-                    except:
-                        pass
-        
-        # ============================================================
-        # STEP 5: FINALIZE
-        # ============================================================
-        final_map = {}
-        for qs, data in energy_map.items():
-            readings = data['readings']
-            if readings:
-                final_map[qs] = {
-                    'mean': np.mean(readings),
-                    'std': np.std(readings),
-                    'readings': readings,
-                    'n_readings': len(readings),
-                    'od': data['od']
-                }
-        
-        return final_map
-        
-    except Exception as e:
-        st.error(f"❌ Error: {str(e)}")
-        return {}
+            return mean_interp, std_interp
+    
+    return np.nan, np.nan
+
 # ==============================================================
 # CORE SPECTRAL ANALYSIS FUNCTIONS
 # ==============================================================
@@ -514,40 +368,7 @@ def parse_asc_file(file_content: str, skip_rows: int) -> Tuple[np.ndarray, np.nd
     counts = df.iloc[:, 1:].mean(axis=1).to_numpy()
     
     return wl, counts
-def interpolate_energy(qs_value: float, energy_map: Dict[float, Dict]) -> Tuple[float, float]:
-    """
-    Interpolate energy for a given QS value using the calibration map.
-    Returns (mean_energy, std_energy)
-    """
-    if not energy_map:
-        return np.nan, np.nan
-    
-    qs_levels = sorted(energy_map.keys())
-    
-    # Exact match
-    if qs_value in energy_map:
-        return energy_map[qs_value]['mean'], energy_map[qs_value]['std']
-    
-    # Out of range - use nearest value
-    if qs_value < min(qs_levels) or qs_value > max(qs_levels):
-        nearest_qs = min(qs_levels, key=lambda x: abs(x - qs_value))
-        return energy_map[nearest_qs]['mean'], energy_map[nearest_qs]['std']
-    
-    # Linear interpolation between two closest points
-    for i in range(len(qs_levels) - 1):
-        if qs_levels[i] <= qs_value <= qs_levels[i+1]:
-            qs1, qs2 = qs_levels[i], qs_levels[i+1]
-            e1, e2 = energy_map[qs1]['mean'], energy_map[qs2]['mean']
-            std1, std2 = energy_map[qs1]['std'], energy_map[qs2]['std']
-            
-            # Linear interpolation
-            t = (qs_value - qs1) / (qs2 - qs1)
-            mean_interp = e1 + t * (e2 - e1)
-            std_interp = std1 + t * (std2 - std1)
-            
-            return mean_interp, std_interp
-    
-    return np.nan, np.nan
+
 # ==============================================================
 # VISUALIZATION FUNCTIONS
 # ==============================================================
@@ -861,7 +682,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.markdown('<p class="main-header">🔬 Random Laser Analyzer</p>', unsafe_allow_html=True)
-st.markdown("**Lorentzian fitting • OD correction • Energy calibration • Complete analysis suite**")
+st.markdown("**Lorentzian fitting • OD correction • Manual energy calibration • Complete analysis suite**")
 
 if not KALEIDO_AVAILABLE:
     st.warning("⚠️ Image export disabled. Install: `pip install kaleido`")
@@ -887,7 +708,7 @@ with st.sidebar:
     st.markdown("""
     - ✅ Lorentzian fitting
     - ✅ OD/ND correction
-    - ✅ Energy calibration
+    - ✅ Manual energy calibration
     - ✅ Wavelength vs Energy
     - ✅ Intensity vs Energy
     - ✅ Threshold detection
@@ -914,121 +735,144 @@ with col1:
 with col2:
     st.subheader("⚡ Energy Calibration")
     
-    with st.expander("📋 Format (Your Exact Format)"):
+    with st.expander("📝 Manual Entry Guide", expanded=False):
         st.markdown("""
-        **Columns A-K, Rows 1-14:**
+        ### How to Enter Energy Calibration
+        
+        1. **Enter QS-Energy pairs** in the text box below
+        2. **Format**: `QS, Energy, StdDev, OD` (one per line)
+        3. **Energy units**: mJ (millijoules)
+        4. **OD** (optional): Optical density used during measurement
+        
+        ### Example Format:
         ```
-        Row 1:  QS levels (200, 190, 180...)
-        Row 2-11: Energy readings (10 measurements)
-        Row 13: Average (optional)
-        Row 14: OD=  0  0  2  2  2...
+        200, 0.0076, 0.0008, 0
+        190, 0.0254, 0.0018, 0
+        180, 0.0582, 0.0032, 2
+        170, 0.1220, 0.0065, 2
+        160, 0.2450, 0.0120, 2
+        150, 0.4890, 0.0210, 2
+        140, 0.9120, 0.0380, 2
+        130, 1.6540, 0.0680, 2
+        120, 2.8920, 0.1150, 2
+        110, 4.9870, 0.1890, 2
         ```
         
-        - Only reads up to column K
-        - Only reads up to row 14
-        - Auto-converts J to mJ
-        - Extracts OD per QS
+        ### Simplified Format (without StdDev/OD):
+        ```
+        200, 0.0076
+        190, 0.0254
+        180, 0.0582
+        ```
         """)
     
-    energy_file = st.file_uploader("Upload energy file (optional)",
-                                   type=['csv', 'txt', 'tsv', 'xlsx', 'xls'], key="energy_file")
+    # Manual energy entry
+    energy_input = st.text_area(
+        "Enter Energy Calibration (QS, Energy [, StdDev] [, OD])",
+        height=300,
+        placeholder="200, 0.0076, 0.0008, 0\n190, 0.0254, 0.0018, 0\n180, 0.0582, 0.0032, 2\n...",
+        help="Enter one QS-Energy pair per line. Format: QS, Energy, StdDev, OD"
+    )
     
-    if energy_file:
-        with st.expander("📊 Preview Energy Data", expanded=True):  # Changed to expanded=True
-            try:
-                file_bytes = energy_file.read()
-                energy_file.seek(0)
+    energy_map = {}
+    
+    if energy_input.strip():
+        try:
+            lines = [line.strip() for line in energy_input.strip().split('\n') if line.strip()]
+            parsed_count = 0
+            error_lines = []
+            
+            for line_num, line in enumerate(lines, 1):
+                # Skip comment lines
+                if line.startswith('#') or line.startswith('//'):
+                    continue
                 
-                # Show file info
-                st.info(f"📄 **File:** {energy_file.name} | **Size:** {len(file_bytes)} bytes")
-                
-                if energy_file.name.endswith(('.xlsx', '.xls')):
-                    st.info("📊 Reading Excel file...")
-                    energy_map = parse_energy_file(None, energy_file.type, file_bytes)
-                else:
-                    st.info("📄 Reading text file...")
-                    energy_content = file_bytes.decode(errors='ignore')
-                    # Show first few lines for debugging
-                    with st.expander("🔍 First 5 lines of file"):
-                        lines = energy_content.split('\n')[:5]
-                        for i, line in enumerate(lines, 1):
-                            st.code(f"Row {i}: {line}")
-                    energy_map = parse_energy_file(energy_content, energy_file.type, file_bytes)
-                
-                if energy_map:
-                    st.success(f"✅ Loaded {len(energy_map)} QS levels")
+                try:
+                    parts = [p.strip() for p in line.split(',')]
                     
+                    if len(parts) >= 2:
+                        qs = float(parts[0])
+                        energy = float(parts[1])
+                        std = float(parts[2]) if len(parts) > 2 and parts[2] else 0.0
+                        od = float(parts[3]) if len(parts) > 3 and parts[3] else 0.0
+                        
+                        energy_map[qs] = {
+                            'mean': energy,
+                            'std': std,
+                            'readings': [energy],
+                            'n_readings': 1,
+                            'od': od
+                        }
+                        parsed_count += 1
+                    else:
+                        error_lines.append(f"Line {line_num}: Not enough values")
+                        
+                except ValueError as e:
+                    error_lines.append(f"Line {line_num}: Invalid number format")
+            
+            if parsed_count > 0:
+                st.success(f"✅ Loaded {parsed_count} QS-Energy pairs")
+                
+                if error_lines:
+                    with st.expander("⚠️ Parsing Warnings", expanded=False):
+                        for err in error_lines:
+                            st.warning(err)
+                
+                # Display calibration table
+                with st.expander("📊 Calibration Data", expanded=True):
                     energy_df = pd.DataFrame([
                         {
-                            'QS': qs, 
-                            'Mean (mJ)': d['mean'], 
-                            'Std (mJ)': d['std'], 
-                            'N': d['n_readings'],
+                            'QS': qs,
+                            'Energy (mJ)': d['mean'],
+                            'Std (mJ)': d['std'],
                             'OD': d.get('od', 0.0)
                         }
                         for qs, d in energy_map.items()
                     ]).sort_values('QS', ascending=False)
                     
                     st.dataframe(energy_df.style.format({
-                        'QS': '{:.0f}', 
-                        'Mean (mJ)': '{:.4f}', 
-                        'Std (mJ)': '{:.4f}', 
-                        'N': '{:.0f}',
+                        'QS': '{:.0f}',
+                        'Energy (mJ)': '{:.4f}',
+                        'Std (mJ)': '{:.4f}',
                         'OD': '{:.1f}'
                     }), use_container_width=True)
                     
-                    # Show OD info
-                    if energy_df['OD'].sum() > 0:
-                        unique_ods = energy_df[energy_df['OD'] > 0]['OD'].unique()
-                        st.success(f"🔍 **OD Filters detected:** {', '.join([f'OD={od}' for od in unique_ods])}")
-                    else:
-                        st.info("ℹ️ No OD filters specified in energy file (all OD=0)")
-                    
-                    # Plot
+                    # Plot calibration curve
                     fig = go.Figure()
                     fig.add_trace(go.Scatter(
-                        x=energy_df['QS'], 
-                        y=energy_df['Mean (mJ)'],
-                        error_y=dict(type='data', array=energy_df['Std (mJ)'], visible=True),
-                        mode='markers+lines', 
-                        marker=dict(size=10, color='blue'),
-                        line=dict(width=2)
+                        x=energy_df['QS'],
+                        y=energy_df['Energy (mJ)'],
+                        error_y=dict(
+                            type='data',
+                            array=energy_df['Std (mJ)'],
+                            visible=True if energy_df['Std (mJ)'].sum() > 0 else False
+                        ),
+                        mode='markers+lines',
+                        marker=dict(size=10, color='#667eea'),
+                        line=dict(width=2, color='#667eea')
                     ))
                     fig.update_layout(
-                        title="Energy Calibration Curve",
+                        title="<b>Energy Calibration Curve</b>",
                         xaxis_title="QS Level",
                         yaxis_title="Pump Energy (mJ)",
                         template="plotly_white",
-                        height=400
+                        height=400,
+                        xaxis=dict(autorange='reversed')  # Higher QS on left
                     )
                     st.plotly_chart(fig, use_container_width=True)
-                else:
-                    st.error("❌ Failed to parse energy file")
-                    st.markdown("""
-                    ### Expected Format:
-                    - **Row 1:** QS levels (e.g., 200, 190, 180, 170, 160, 150...)
-                    - **Rows 2-11:** Energy measurements (10 readings per QS)
-                    - **Row 13:** Average (optional)
-                    - **Row 14:** OD= followed by OD values
                     
-                    ### Example:
-                    ```
-                    	200	    190	    180	    170
-                    	7.48E-06	2.28E-05	5.24E-05	1.19E-04
-                    	6.01E-06	2.46E-05	5.80E-05	1.12E-04
-                    	...
-                    	(8 more rows)
-                    		
-                    	7.57E-06	2.54E-05	5.82E-05	1.22E-04
-                    OD=	0	    0	    2	    2
-                    ```
-                    """)
-            except Exception as e:
-                st.error(f"❌ Error reading energy file: {str(e)}")
-                import traceback
-                with st.expander("🐛 Full Error Details"):
-                    st.code(traceback.format_exc())
+                    # Show OD info
+                    if energy_df['OD'].sum() > 0:
+                        unique_ods = sorted(energy_df[energy_df['OD'] > 0]['OD'].unique())
+                        st.info(f"🔍 **OD Filters in calibration:** {', '.join([f'OD={od:.1f}' for od in unique_ods])}")
+            else:
+                st.error("❌ No valid QS-Energy pairs found")
+                
+        except Exception as e:
+            st.error(f"❌ Error parsing calibration data: {str(e)}")
+            energy_map = {}
     else:
+        st.info("💡 Enter QS-Energy pairs above to enable energy calibration")
         energy_map = {}
 
 # ==============================================================
@@ -1425,12 +1269,12 @@ else:
     with st.expander("📖 Instructions"):
         st.markdown("""
         ### Quick Start
-        1. Upload .asc spectrum files
-        2. Upload energy calibration file (optional)
+        1. **Upload .asc spectrum files** (left column)
+        2. **Enter energy calibration** (right column, optional)
         3. View automated analysis
         4. Download results
         
-        ### Your Filename Format
+        ### Filename Format
         `UL_5mm_QS_110_10rep_17mgR6G_UL_5%IL_LL_1%IL_OD=2.asc`
         
         **Auto-extracts:**
@@ -1441,20 +1285,36 @@ else:
         - Dye: `17mgR6G` → 17mg
         - OD: `OD=2` → 2 (×100)
         
-        ### Energy File Format
-        **Your exact format (columns A-K, rows 1-14):**
+        ### Energy Calibration Entry
+        
+        **Simple format** (just QS and Energy):
         ```
-        Row 1:    200    190    180    170
-        Row 2-11: (10 energy measurements)
-        Row 13:   (average - optional)
-        Row 14:   OD=  0  0  2  2
+        200, 0.0076
+        190, 0.0254
+        180, 0.0582
+        170, 0.1220
         ```
         
+        **Full format** (with standard deviation and OD):
+        ```
+        200, 0.0076, 0.0008, 0
+        190, 0.0254, 0.0018, 0
+        180, 0.0582, 0.0032, 2
+        170, 0.1220, 0.0065, 2
+        ```
+        
+        **Tips:**
+        - Energy in mJ (millijoules)
+        - One QS-Energy pair per line
+        - Lines starting with # are ignored (comments)
+        - StdDev and OD are optional
+        
         ### Plots Generated
+        - **Individual Spectra**: Lorentzian fits with OD correction
         - **Combined Spectra**: All overlaid
         - **Threshold Dashboard**: 4-panel analysis
-        - **Energy vs Wavelength**: Peak shifts
-        - **Energy vs Intensity**: Growth curves
+        - **Energy vs Wavelength**: Peak shifts (if energy cal enabled)
+        - **Energy vs Intensity**: Growth curves (if energy cal enabled)
         
         All grouped by sample conditions with smooth curves!
         """)
@@ -1465,4 +1325,3 @@ st.markdown("""
 📧 varun.solanki@fau.de | Friedrich-Alexander-Universität Erlangen-Nürnberg
 </div>
 """, unsafe_allow_html=True)
-
