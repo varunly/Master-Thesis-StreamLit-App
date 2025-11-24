@@ -831,4 +831,429 @@ with col2:
     else:
         energy_map = {}
 
-# [CONTINUE IN NEXT MESSAGE - CHARACTER LIMIT]
+# ==============================================================
+# MAIN PROCESSING (CONTINUATION)
+# ==============================================================
+if uploaded_files:
+    st.markdown("---")
+    
+    progress_bar = st.progress(0)
+    status = st.empty()
+    
+    summary_data = []
+    plot_zip = BytesIO()
+    image_zip = BytesIO() if KALEIDO_AVAILABLE else None
+    combined_fig = go.Figure()
+    
+    if energy_map:
+        st.info("⚡ **Energy calibration active**")
+    
+    with zipfile.ZipFile(plot_zip, "w", zipfile.ZIP_DEFLATED) as html_buffer:
+        img_buffer = zipfile.ZipFile(image_zip, "w", zipfile.ZIP_DEFLATED) if KALEIDO_AVAILABLE else None
+        
+        try:
+            for idx, file in enumerate(uploaded_files):
+                filename = file.name
+                status.info(f"Processing: {filename} ({idx+1}/{len(uploaded_files)})")
+                
+                try:
+                    # Parse
+                    content = file.read().decode(errors='ignore')
+                    wl, counts_raw = parse_asc_file(content, skip_rows)
+                    
+                    # Metadata extraction
+                    qs = extract_qs(filename)
+                    nd_value = extract_nd(filename) if apply_nd else 0.0
+                    thickness = extract_thickness(filename)
+                    concentration = extract_concentration(filename)
+                    dye_amount = extract_dye_amount(filename)
+                    repetitions = extract_repetitions(filename)
+                    sample_label = get_sample_label(thickness, concentration, dye_amount)
+                    sample_label_short = get_short_label(thickness, concentration)
+                    
+                    # Energy
+                    if energy_map and not np.isnan(qs):
+                        energy_mean, energy_std = interpolate_energy(qs, energy_map)
+                    else:
+                        energy_mean, energy_std = np.nan, np.nan
+                    
+                    # ND correction
+                    if nd_value > 0:
+                        counts_corrected = apply_nd_correction(counts_raw, nd_value)
+                        if show_individual:
+                            st.info(f"🔧 OD/ND={nd_value} correction (×{10**nd_value:.0f})")
+                    else:
+                        counts_corrected = counts_raw.copy()
+                    
+                    # Analyze
+                    result = analyze_spectrum(wl, counts_corrected)
+                    
+                    # Plot individual
+                    if show_individual:
+                        fig = create_spectrum_plot(wl, counts_raw, counts_corrected, result, 
+                                                  filename, nd_value, energy_mean, energy_std)
+                        st.plotly_chart(fig, use_container_width=True)
+                        
+                        if KALEIDO_AVAILABLE:
+                            col1, col2 = st.columns([3, 1])
+                            with col2:
+                                try:
+                                    img_bytes = fig_to_image(fig, image_format, image_width, 
+                                                            image_height, image_scale)
+                                    st.download_button(f"📥 {image_format.upper()}", img_bytes,
+                                                      f"{filename.replace('.asc', '')}.{image_format}",
+                                                      f"image/{image_format}", key=f"dl_{idx}")
+                                    if img_buffer:
+                                        img_buffer.writestr(f"{filename.replace('.asc', '')}.{image_format}", 
+                                                          img_bytes)
+                                except Exception as e:
+                                    st.error(f"Export failed: {e}")
+                        
+                        if show_fit_params and result.fit_success:
+                            with st.expander(f"🔍 Parameters - {filename}"):
+                                c1, c2, c3, c4, c5, c6 = st.columns(6)
+                                c1.metric("Amplitude", f"{result.fit_params.get('Amplitude', 0):.1f}")
+                                c2.metric("Center", f"{result.fit_params.get('Center', 0):.2f}")
+                                c3.metric("Gamma", f"{result.fit_params.get('Gamma', 0):.2f}")
+                                c4.metric("OD/ND", f"{nd_value:.1f}" if nd_value > 0 else "None")
+                                if not np.isnan(energy_mean):
+                                    c5.metric("Energy (mJ)", f"{energy_mean:.3f}")
+                                c6.metric("Sample", sample_label_short)
+                        
+                        html = fig.to_html(full_html=False, include_plotlyjs='cdn').encode()
+                        html_buffer.writestr(f"{filename.replace('.asc', '')}.html", html)
+                    
+                    # Combined plot label
+                    label = f"QS={qs:.0f}" if not np.isnan(qs) else filename
+                    if not np.isnan(energy_mean):
+                        label += f" ({energy_mean:.2f}mJ)"
+                    if nd_value > 0:
+                        label += f" [OD{nd_value}]"
+                    
+                    combined_fig.add_trace(go.Scatter(x=wl, y=counts_corrected, mode='lines', name=label))
+                    
+                    # Store summary
+                    summary_data.append({
+                        "File": filename,
+                        "Thickness (mm)": thickness,
+                        "UL Concentration (%)": concentration.get('upper') if concentration else None,
+                        "LL Concentration (%)": concentration.get('lower') if concentration else None,
+                        "Dye Amount (mg)": dye_amount,
+                        "Repetitions": repetitions,
+                        "Sample Label": sample_label,
+                        "Sample Label Short": sample_label_short,
+                        "QS Level": qs,
+                        "Pump Energy (mJ)": energy_mean,
+                        "Energy Std (mJ)": energy_std,
+                        "ND Filter": nd_value,
+                        "Correction Factor": 10**nd_value if nd_value > 0 else 1,
+                        "Peak λ (nm)": result.peak_wavelength,
+                        "Peak Intensity": result.peak_intensity,
+                        "FWHM (nm)": result.fwhm,
+                        "Integrated Intensity": result.integrated_intensity,
+                        "R²": result.r_squared,
+                        "SNR": result.snr,
+                        "Fit Success": "✅" if result.fit_success else "❌"
+                    })
+                    
+                except Exception as e:
+                    st.error(f"Error: {filename}: {e}")
+                    continue
+                
+                progress_bar.progress((idx + 1) / len(uploaded_files))
+        
+        finally:
+            if img_buffer:
+                img_buffer.close()
+    
+    status.success("✅ Processing complete!")
+    progress_bar.empty()
+    
+    # ==============================================================
+    # RESULTS SECTION
+    # ==============================================================
+    
+    st.markdown("---")
+    st.subheader("📊 Summary Statistics")
+    
+    summary_df = pd.DataFrame(summary_data)
+    if 'Pump Energy (mJ)' in summary_df.columns and summary_df['Pump Energy (mJ)'].notna().any():
+        summary_df = summary_df.sort_values("Pump Energy (mJ)")
+    else:
+        summary_df = summary_df.sort_values("QS Level")
+    
+    col1, col2, col3, col4, col5, col6 = st.columns(6)
+    col1.metric("Files", len(summary_df))
+    col2.metric("Avg R²", f"{summary_df['R²'].mean():.3f}")
+    col3.metric("Avg FWHM", f"{summary_df['FWHM (nm)'].mean():.2f} nm")
+    col4.metric("OD/ND Corrected", summary_df[summary_df["ND Filter"] > 0].shape[0])
+    col5.metric("Energy Cal.", summary_df[summary_df["Pump Energy (mJ)"].notna()].shape[0])
+    col6.metric("Conditions", summary_df['Sample Label Short'].nunique())
+    
+    # Combined plot
+    st.markdown("---")
+    st.subheader("🌈 Combined Spectra")
+    combined_fig.update_layout(title="Spectral Evolution", xaxis_title="Wavelength (nm)",
+                               yaxis_title="Intensity (OD-corrected)", template="plotly_white", height=600)
+    st.plotly_chart(combined_fig, use_container_width=True)
+    
+    if KALEIDO_AVAILABLE:
+        col1, col2, col3 = st.columns([2, 1, 2])
+        with col2:
+            try:
+                img = fig_to_image(combined_fig, image_format, image_width, image_height, image_scale)
+                st.download_button(f"📥 Combined ({image_format.upper()})", img,
+                                  f"combined.{image_format}", f"image/{image_format}")
+            except:
+                pass
+    
+    # Data table
+    st.markdown("---")
+    st.subheader("📋 Results Table")
+    
+    def highlight_r2(val):
+        if pd.isna(val): return ''
+        if val > 0.95: return 'background-color: #d4edda'
+        if val > 0.85: return 'background-color: #fff3cd'
+        return 'background-color: #f8d7da'
+    
+    styled = summary_df.style.applymap(highlight_r2, subset=['R²']).format({
+        'Peak λ (nm)': '{:.2f}', 'Peak Intensity': '{:.0f}', 'FWHM (nm)': '{:.2f}',
+        'Integrated Intensity': '{:.2e}', 'R²': '{:.4f}', 'SNR': '{:.1f}',
+        'QS Level': lambda x: f'{x:.0f}' if not pd.isna(x) else '',
+        'Pump Energy (mJ)': lambda x: f'{x:.4f}' if not pd.isna(x) else '',
+        'Energy Std (mJ)': lambda x: f'{x:.4f}' if not pd.isna(x) else '',
+        'ND Filter': lambda x: f'{x:.1f}' if x > 0 else '',
+        'Thickness (mm)': lambda x: f'{x:.1f}' if not pd.isna(x) else '',
+        'UL Concentration (%)': lambda x: f'{x:.1f}' if not pd.isna(x) else '',
+        'LL Concentration (%)': lambda x: f'{x:.1f}' if not pd.isna(x) else '',
+        'Dye Amount (mg)': lambda x: f'{x:.1f}' if not pd.isna(x) else '',
+        'Repetitions': lambda x: f'{x:.0f}' if not pd.isna(x) else ''
+    })
+    
+    st.dataframe(styled, use_container_width=True)
+    
+    # Threshold
+    use_energy = 'Pump Energy (mJ)' in summary_df.columns and summary_df['Pump Energy (mJ)'].notna().sum() > 3
+    
+    if use_energy or summary_df['QS Level'].notna().sum() > 3:
+        st.markdown("---")
+        st.subheader("🎯 Threshold Detection")
+        
+        if use_energy:
+            valid = summary_df.dropna(subset=['Pump Energy (mJ)', 'Integrated Intensity'])
+            threshold = detect_threshold(valid['Pump Energy (mJ)'].values, valid['Integrated Intensity'].values)
+        else:
+            valid = summary_df.dropna(subset=['QS Level', 'Integrated Intensity'])
+            threshold = detect_threshold(valid['QS Level'].values, valid['Integrated Intensity'].values)
+        
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            if threshold.threshold_found:
+                if use_energy:
+                    st.success(f"✅ Threshold: **{threshold.threshold_energy:.4f} mJ**")
+                else:
+                    st.success(f"✅ Threshold: QS **{threshold.threshold_qs:.1f}**")
+            else:
+                st.warning("⚠️ No threshold detected")
+        with col2:
+            st.metric("Slope (below)", f"{threshold.slope_below:.2e}")
+        with col3:
+            st.metric("Slope (above)", f"{threshold.slope_above:.2e}")
+        
+        threshold_fig = create_threshold_plot(summary_df, threshold, use_energy)
+        st.plotly_chart(threshold_fig, use_container_width=True)
+        
+        if KALEIDO_AVAILABLE:
+            col1, col2, col3 = st.columns([2, 1, 2])
+            with col2:
+                try:
+                    img = fig_to_image(threshold_fig, image_format, int(image_width*1.5), 
+                                      int(image_height*1.2), image_scale)
+                    st.download_button(f"📥 Threshold ({image_format.upper()})", img,
+                                      f"threshold.{image_format}", f"image/{image_format}")
+                except:
+                    pass
+    
+    # ==============================================================
+    # ENERGY VS WAVELENGTH PLOT
+    # ==============================================================
+    if 'Pump Energy (mJ)' in summary_df.columns and summary_df['Pump Energy (mJ)'].notna().sum() > 2:
+        st.markdown("---")
+        st.subheader("📈 Peak Wavelength Evolution")
+        
+        # Show sample conditions summary
+        if 'Sample Label Short' in summary_df.columns:
+            unique_conditions = summary_df['Sample Label Short'].unique()
+            unique_conditions = [c for c in unique_conditions if c != "No Label"]
+            
+            if len(unique_conditions) > 0:
+                st.info(f"📊 **Sample Conditions**: {len(unique_conditions)} different conditions detected")
+                
+                with st.expander("🔍 View Sample Conditions Details"):
+                    conditions_summary = summary_df[summary_df['Sample Label Short'] != "No Label"].groupby('Sample Label Short').agg({
+                        'File': 'count',
+                        'Thickness (mm)': 'first',
+                        'UL Concentration (%)': 'first',
+                        'LL Concentration (%)': 'first',
+                        'Dye Amount (mg)': 'first',
+                        'Pump Energy (mJ)': ['min', 'max'],
+                        'Peak λ (nm)': ['min', 'max']
+                    }).round(4)
+                    conditions_summary.columns = ['Files', 'Thickness (mm)', 'UL Conc (%)', 'LL Conc (%)', 
+                                                 'Dye (mg)', 'Min Energy (mJ)', 'Max Energy (mJ)',
+                                                 'Min λ (nm)', 'Max λ (nm)']
+                    st.dataframe(conditions_summary)
+        
+        # Create plot
+        energy_wl_fig = create_energy_wavelength_plot(summary_df)
+        
+        if energy_wl_fig:
+            st.plotly_chart(energy_wl_fig, use_container_width=True)
+            
+            # Download
+            if KALEIDO_AVAILABLE:
+                col1, col2, col3 = st.columns([2, 1, 2])
+                with col2:
+                    try:
+                        img = fig_to_image(energy_wl_fig, image_format, image_width, image_height, image_scale)
+                        st.download_button(f"📥 Energy-Wavelength ({image_format.upper()})", img,
+                                          f"energy_wavelength.{image_format}", f"image/{image_format}",
+                                          key="dl_energy_wl")
+                    except Exception as e:
+                        st.error(f"Export failed: {e}")
+            
+            # Statistics
+            with st.expander("📊 Wavelength Shift Statistics"):
+                if 'Sample Label Short' in summary_df.columns:
+                    for label in summary_df['Sample Label Short'].unique():
+                        if label == "No Label":
+                            continue
+                        
+                        group = summary_df[summary_df['Sample Label Short'] == label].dropna(
+                            subset=['Pump Energy (mJ)', 'Peak λ (nm)'])
+                        if len(group) > 1:
+                            min_wl = group['Peak λ (nm)'].min()
+                            max_wl = group['Peak λ (nm)'].max()
+                            shift = max_wl - min_wl
+                            
+                            st.markdown(f"**{label}**")
+                            col1, col2, col3 = st.columns(3)
+                            col1.metric("λ Range", f"{min_wl:.2f} - {max_wl:.2f} nm")
+                            col2.metric("Total Shift", f"{shift:.2f} nm")
+                            col3.metric("Data Points", len(group))
+                            
+                            # Show full label
+                            full_label = group['Sample Label'].iloc[0]
+                            with st.expander(f"Full Info: {label}"):
+                                st.info(full_label)
+                else:
+                    # Single condition
+                    group = summary_df.dropna(subset=['Pump Energy (mJ)', 'Peak λ (nm)'])
+                    if len(group) > 1:
+                        min_wl = group['Peak λ (nm)'].min()
+                        max_wl = group['Peak λ (nm)'].max()
+                        shift = max_wl - min_wl
+                        
+                        col1, col2, col3 = st.columns(3)
+                        col1.metric("λ Range", f"{min_wl:.2f} - {max_wl:.2f} nm")
+                        col2.metric("Total Shift", f"{shift:.2f} nm")
+                        col3.metric("Data Points", len(group))
+    
+    # Downloads
+    st.markdown("---")
+    st.subheader("💾 Export All Results")
+    
+    cols = st.columns(4 if KALEIDO_AVAILABLE else 3)
+    
+    with cols[0]:
+        csv = summary_df.to_csv(index=False).encode()
+        st.download_button("📥 CSV", csv, f"results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                          "text/csv", use_container_width=True)
+    
+    with cols[1]:
+        st.download_button("📦 HTML Plots", plot_zip.getvalue(),
+                          f"plots_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip",
+                          "application/zip", use_container_width=True)
+    
+    with cols[2]:
+        excel_buffer = BytesIO()
+        with pd.ExcelWriter(excel_buffer, engine='xlsxwriter') as writer:
+            summary_df.to_excel(writer, sheet_name='Results', index=False)
+            if energy_map:
+                energy_cal_df = pd.DataFrame([
+                    {'QS': qs, 'Mean (mJ)': d['mean'], 'Std (mJ)': d['std'], 'N': d['n_readings']}
+                    for qs, d in energy_map.items()
+                ]).sort_values('QS')
+                energy_cal_df.to_excel(writer, sheet_name='Energy Cal', index=False)
+        
+        st.download_button("📊 Excel", excel_buffer.getvalue(),
+                          f"results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+                          "application/vnd.ms-excel", use_container_width=True)
+    
+    if KALEIDO_AVAILABLE and image_zip:
+        with cols[3]:
+            st.download_button(f"🖼️ Images ({image_format.upper()})", image_zip.getvalue(),
+                              f"images_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip",
+                              "application/zip", use_container_width=True)
+
+else:
+    # Welcome screen
+    st.info("👆 Upload .asc files to begin")
+    
+    with st.expander("📖 Instructions"):
+        st.markdown("""
+        ### Quick Start
+        1. Upload .asc spectrum files
+        2. Optionally upload energy calibration file
+        3. View automated analysis
+        4. Download results
+        
+        ### Your Filename Format
+        `UL_5mm_QS_110_10rep_17mgR6G_UL_5%IL_LL_1%IL_SD_00degDA_0_OD=2.asc`
+        
+        **Automatically extracts:**
+        - **Thickness**: `UL_5mm` → 5.0 mm
+        - **Q-Switch**: `QS_110` → 110
+        - **Upper Layer Conc**: `UL_5%IL` → 5.0%
+        - **Lower Layer Conc**: `LL_1%IL` → 1.0%
+        - **Dye Amount**: `17mgR6G` → 17.0 mg
+        - **Repetitions**: `10rep` → 10
+        - **OD/ND Filter**: `OD=2` → 2.0 (×100 correction)
+        
+        ### Energy File Format
+        **Transposed Excel/CSV:**
+        ```
+        QS_Level  110      120      130
+        Energy 1  8.2E-06  2.6E-05  6.7E-05
+        Energy 2  9.0E-06  2.5E-05  6.3E-05
+        ...
+        Energy 10 8.1E-06  2.7E-05  7.0E-05
+        ```
+        - Values in Joules auto-convert to mJ
+        - Scientific notation supported
+        
+        ### Features
+        - **Lorentzian Fitting**: Automated peak finding and FWHM calculation
+        - **ND/OD Correction**: Automatic intensity correction (multiply by 10^OD)
+        - **Energy Calibration**: Use real pump energies with error bars
+        - **Sample Grouping**: Plot different thickness/concentration combinations
+        - **Wavelength Evolution**: See how peak wavelength changes with pump energy
+        - **Threshold Detection**: Automatic lasing threshold identification
+        - **Export Options**: CSV, Excel, HTML plots, high-quality images
+        
+        ### Plot Color Coding
+        - Different **colors** = different sample conditions (thickness + concentration)
+        - **Smooth curves** = spline interpolation
+        - **Error bars** = pump energy measurement uncertainty
+        - **Interactive** = zoom, pan, hover for details
+        """)
+
+# Footer
+st.markdown("---")
+st.markdown("""
+<div style='text-align: center; color: #666;'>
+📧 varun.solanki@fau.de | Friedrich-Alexander-Universität Erlangen-Nürnberg
+</div>
+""", unsafe_allow_html=True)
+
