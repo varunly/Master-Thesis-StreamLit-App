@@ -193,182 +193,312 @@ def apply_nd_correction(counts: np.ndarray, nd_value: float) -> np.ndarray:
     return counts * correction_factor
 
 # ==============================================================
-# ENERGY CALIBRATION FUNCTIONS (FIXED VERSION)
+# ENERGY CALIBRATION FUNCTIONS (BULLETPROOF VERSION)
 # ==============================================================
 @st.cache_data
 def parse_energy_file(file_content: str, file_type: str, file_bytes: bytes = None) -> Dict[float, Dict]:
     """
-    Parse energy calibration file - YOUR EXACT FORMAT
+    Parse energy calibration file - BULLETPROOF VERSION
     
     Format:
-    Row 1: QS levels (columns A-K, up to 10 QS values)
+    Row 1: QS levels (columns, up to 10 QS values)
     Rows 2-11: Energy readings (10 measurements)
-    Row 12: (empty or label)
     Row 13: Average energy (optional)
     Row 14: OD values with label "OD=" in first column
-    
-    Only reads up to column K (11 columns) and row 14
     """
     energy_map = {}
-    df = None  # Initialize df
+    
+    st.info("🔄 Starting energy file parsing...")
     
     try:
-        # Read file (limit to first 14 rows and 11 columns)
-        if file_bytes and ('xlsx' in str(file_type).lower() or 'xls' in str(file_type).lower()):
-            try:
-                import io
-                df = pd.read_excel(io.BytesIO(file_bytes), header=None, nrows=14)
-                # Limit to 11 columns if more exist
-                if df.shape[1] > 11:
-                    df = df.iloc[:, :11]
-            except Exception as e:
-                st.error(f"Excel read error: {str(e)}")
-                return {}
-        else:
-            # Try different separators for text files
-            for sep in ['\t', ',', ';', '|']:
-                try:
-                    df = pd.read_csv(StringIO(file_content), sep=sep, header=None, nrows=14)
-                    # Limit to 11 columns
-                    if df.shape[1] > 11:
-                        df = df.iloc[:, :11]
-                    # If we got a valid dataframe, break
-                    if df is not None and not df.empty:
-                        break
-                except Exception:
-                    continue
+        # ============================================================
+        # STEP 1: READ THE FILE
+        # ============================================================
+        df = None
         
-        # Check if df was successfully created
-        if df is None or df.empty:
-            st.error("❌ Could not read energy file. Check file format.")
+        if file_bytes:
+            st.info(f"📦 File bytes received: {len(file_bytes)} bytes")
+            
+            # Check file type
+            file_type_str = str(file_type).lower()
+            st.info(f"🔍 File type detected: {file_type_str}")
+            
+            # Try Excel read - USE OPENPYXL ENGINE DIRECTLY
+            try:
+                st.info("📊 Attempting Excel read with openpyxl...")
+                import io
+                
+                # Read ALL data first without restrictions
+                df = pd.read_excel(
+                    io.BytesIO(file_bytes), 
+                    header=None,
+                    engine='openpyxl'
+                )
+                
+                st.success(f"✅ Excel file loaded successfully!")
+                st.info(f"📐 Original size: {df.shape[0]} rows × {df.shape[1]} columns")
+                
+                # Show first few rows
+                with st.expander("👀 Raw File Preview (first 15 rows, all columns)", expanded=True):
+                    st.dataframe(df.head(15))
+                
+                # Now limit to 14 rows and 11 columns for processing
+                original_shape = df.shape
+                df = df.iloc[:14, :11]
+                st.info(f"✂️ Trimmed to: {df.shape[0]} rows × {df.shape[1]} columns (for processing)")
+                
+            except ImportError as e:
+                st.error("❌ openpyxl not installed!")
+                st.error("Install it with: `pip install openpyxl`")
+                return {}
+                
+            except Exception as e:
+                st.error(f"❌ Excel reading failed: {str(e)}")
+                
+                # Try alternative: xlrd for older Excel files
+                try:
+                    st.info("🔄 Trying xlrd engine (for .xls files)...")
+                    import io
+                    df = pd.read_excel(io.BytesIO(file_bytes), header=None, engine='xlrd')
+                    st.success(f"✅ Read with xlrd: {df.shape[0]} rows × {df.shape[1]} columns")
+                except Exception as e2:
+                    st.error(f"❌ xlrd also failed: {str(e2)}")
+                    
+                    # Last resort: try as CSV
+                    st.warning("⚠️ Trying to read as CSV/TSV...")
+                    try:
+                        content_str = file_bytes.decode('utf-8', errors='ignore')
+                        for sep in ['\t', ',', ';', '|']:
+                            try:
+                                df = pd.read_csv(StringIO(content_str), sep=sep, header=None)
+                                if df.shape[1] > 1:
+                                    st.success(f"✅ Read as CSV with separator '{sep}': {df.shape}")
+                                    break
+                            except:
+                                continue
+                    except Exception as e3:
+                        st.error(f"❌ All read attempts failed: {str(e3)}")
+                        return {}
+        else:
+            st.error("❌ No file bytes provided")
             return {}
         
-        # Row 1 (index 0): QS levels
-        first_row = df.iloc[0, :]
+        # ============================================================
+        # STEP 2: VALIDATE DATAFRAME
+        # ============================================================
+        if df is None:
+            st.error("❌ DataFrame is None - file reading failed")
+            return {}
         
-        # Extract QS levels (skip first column if it's a label)
+        if df.empty:
+            st.error("❌ DataFrame is empty")
+            return {}
+        
+        st.success(f"✅ DataFrame validated: {df.shape[0]} rows × {df.shape[1]} columns")
+        
+        # Check minimum requirements
+        if df.shape[0] < 2:
+            st.error(f"❌ Not enough rows: need at least 2, got {df.shape[0]}")
+            return {}
+        
+        if df.shape[1] < 2:
+            st.error(f"❌ Not enough columns: need at least 2, got {df.shape[1]}")
+            return {}
+        
+        # ============================================================
+        # STEP 3: EXTRACT QS LEVELS FROM ROW 1
+        # ============================================================
+        st.info("🔍 Step 1: Extracting QS levels from row 1...")
+        
+        first_row = df.iloc[0, :]
+        st.write("**Row 1 values:**", first_row.tolist())
+        
         qs_levels = []
         start_col = 0
         
-        # Check if first cell is a number or label
+        # Check if first cell is a label or number
+        first_cell = first_row.iloc[0]
+        st.write(f"**First cell:** `{first_cell}` (type: {type(first_cell).__name__})")
+        
         try:
-            float(first_row.iloc[0])
-            start_col = 0
+            if pd.notna(first_cell):
+                # Try to convert to float
+                test_val = float(first_cell)
+                start_col = 0
+                st.info(f"✓ First cell is numeric ({test_val}), starting from column 0")
         except:
             start_col = 1
+            st.info(f"✓ First cell is a label ('{first_cell}'), starting from column 1")
         
-        # Extract QS levels from first row
-        for val in first_row.iloc[start_col:]:
+        # Extract QS values
+        for col_idx in range(start_col, df.shape[1]):
+            val = first_row.iloc[col_idx]
+            
             try:
-                if pd.notna(val) and val != '':
+                if pd.notna(val) and str(val).strip() != '':
                     qs_val = float(val)
                     qs_levels.append(qs_val)
-            except:
+                    st.write(f"  ✓ Column {col_idx}: QS = **{qs_val}**")
+            except Exception as e:
+                st.warning(f"  ⚠ Column {col_idx}: Could not parse '{val}' - {str(e)}")
                 continue
         
         if not qs_levels:
-            st.error("❌ Could not find QS levels in first row of energy file")
-            st.info("First row should contain QS values like: 200, 190, 180, 170...")
+            st.error("❌ No QS levels found in row 1!")
+            st.error("**Expected:** Row 1 should have numeric QS values like 200, 190, 180, ...")
+            st.write("**Got:**", first_row.tolist())
             return {}
         
         st.success(f"✅ Found {len(qs_levels)} QS levels: {qs_levels}")
+        
+        # ============================================================
+        # STEP 4: EXTRACT ENERGY READINGS (ROWS 2-11)
+        # ============================================================
+        st.info("📊 Step 2: Extracting energy readings from rows 2-11...")
         
         # Initialize storage
         for qs in qs_levels:
             energy_map[qs] = {'readings': [], 'od': 0.0}
         
-        # Read energy readings from rows 2-11 (indices 1-10)
-        readings_found = 0
-        for row_idx in range(1, min(11, len(df))):
+        readings_count = 0
+        
+        # Read rows 2-11 (indices 1-10)
+        max_row = min(11, df.shape[0])
+        st.info(f"Reading rows 2 to {max_row} (indices 1 to {max_row-1})...")
+        
+        for row_idx in range(1, max_row):
             row = df.iloc[row_idx, :]
+            row_readings = 0
             
             for col_idx, qs in enumerate(qs_levels):
+                actual_col = start_col + col_idx
+                
+                if actual_col >= df.shape[1]:
+                    continue
+                
                 try:
-                    energy_val = float(row.iloc[start_col + col_idx])
-                    if pd.notna(energy_val):
-                        # Convert J to mJ if needed
+                    cell_value = row.iloc[actual_col]
+                    
+                    if pd.notna(cell_value):
+                        energy_val = float(cell_value)
+                        
+                        # Convert J to mJ if needed (values < 0.1 assumed to be in Joules)
                         if energy_val < 0.1:
                             energy_val = energy_val * 1000
+                        
                         energy_map[qs]['readings'].append(energy_val)
-                        readings_found += 1
+                        readings_count += 1
+                        row_readings += 1
                 except:
                     continue
+            
+            if row_readings > 0:
+                st.write(f"  ✓ Row {row_idx + 1}: {row_readings} readings extracted")
         
-        st.info(f"📊 Extracted {readings_found} energy readings from rows 2-11")
+        if readings_count == 0:
+            st.error("❌ No energy readings found in rows 2-11!")
+            st.write("**Showing rows 2-5 for debugging:**")
+            st.dataframe(df.iloc[1:5, :])
+            return {}
         
-        # Read average from row 13 (index 12) - optional
-        if len(df) > 12:
+        st.success(f"✅ Total: {readings_count} energy readings extracted")
+        
+        # ============================================================
+        # STEP 5: EXTRACT OD VALUES (ROW 14, IF EXISTS)
+        # ============================================================
+        if df.shape[0] > 13:
+            st.info("🔍 Step 3: Extracting OD values from row 14...")
+            
             try:
-                avg_row = df.iloc[12, :]
-                for col_idx, qs in enumerate(qs_levels):
-                    try:
-                        avg_val = float(avg_row.iloc[start_col + col_idx])
-                        if pd.notna(avg_val):
-                            if avg_val < 0.1:
-                                avg_val = avg_val * 1000
-                            energy_map[qs]['file_avg'] = avg_val
-                    except:
-                        pass
-            except:
-                pass
-        
-        # Read OD values from row 14 (index 13)
-        od_found = 0
-        if len(df) > 13:
-            try:
-                od_row = df.iloc[13, :]
-                # Check if first cell contains "OD" or "ND" label
+                od_row = df.iloc[13, :]  # Row 14 (index 13)
+                st.write("**Row 14 values:**", od_row.tolist())
+                
+                # Check first cell for "OD" label
                 first_cell = str(od_row.iloc[0]).upper()
+                
                 if 'OD' in first_cell or 'ND' in first_cell:
                     start_col_od = 1
+                    st.info(f"✓ Found OD label: '{od_row.iloc[0]}'")
                 else:
                     start_col_od = start_col
+                    st.info("✓ No OD label, using same start column as data")
                 
+                od_found = 0
                 for col_idx, qs in enumerate(qs_levels):
+                    actual_col = start_col_od + col_idx
+                    
+                    if actual_col >= df.shape[1]:
+                        continue
+                    
                     try:
-                        od_val = float(od_row.iloc[start_col_od + col_idx])
+                        od_val = od_row.iloc[actual_col]
                         if pd.notna(od_val):
-                            energy_map[qs]['od'] = float(od_val)
-                            if od_val > 0:
+                            od_num = float(od_val)
+                            energy_map[qs]['od'] = od_num
+                            
+                            if od_num > 0:
                                 od_found += 1
+                                st.write(f"  ✓ QS {qs}: OD = {od_num}")
                     except:
-                        pass
+                        continue
                 
                 if od_found > 0:
-                    st.info(f"🔍 Found OD values for {od_found} QS levels in row 14")
+                    st.success(f"✅ Found OD values for {od_found} QS levels")
+                else:
+                    st.info("ℹ️ No OD values found (all zero or missing)")
+                    
             except Exception as e:
-                st.warning(f"Could not read OD values from row 14: {str(e)}")
+                st.warning(f"⚠️ Could not read OD from row 14: {str(e)}")
+        else:
+            st.info(f"ℹ️ File only has {df.shape[0]} rows, skipping OD extraction (need 14+)")
         
-        # Calculate statistics
+        # ============================================================
+        # STEP 6: CALCULATE STATISTICS
+        # ============================================================
+        st.info("📈 Step 4: Calculating statistics...")
+        
         final_map = {}
         for qs in energy_map:
             readings = energy_map[qs]['readings']
+            
             if readings:
+                mean_val = np.mean(readings)
+                std_val = np.std(readings)
+                
                 final_map[qs] = {
-                    'mean': np.mean(readings),
-                    'std': np.std(readings),
+                    'mean': mean_val,
+                    'std': std_val,
                     'readings': readings,
                     'n_readings': len(readings),
                     'od': energy_map[qs].get('od', 0.0),
-                    'file_avg': energy_map[qs].get('file_avg', np.mean(readings))
+                    'file_avg': mean_val
                 }
+                
+                st.write(f"  ✓ QS {qs}: {len(readings)} readings, "
+                        f"mean={mean_val:.6f} mJ, std={std_val:.6f} mJ, OD={energy_map[qs].get('od', 0.0)}")
         
         if not final_map:
-            st.error("❌ No valid energy data found")
+            st.error("❌ No valid energy data after processing")
             return {}
         
-        st.success(f"✅ Successfully parsed energy data for {len(final_map)} QS levels")
+        st.success(f"✅ Successfully parsed {len(final_map)} QS levels")
         return final_map
         
     except Exception as e:
-        st.error(f"❌ Error parsing energy file: {str(e)}")
+        st.error(f"❌ Unexpected error in parse_energy_file: {str(e)}")
         import traceback
-        with st.expander("🐛 Debug Info"):
+        
+        with st.expander("🐛 Full Error Traceback", expanded=True):
             st.code(traceback.format_exc())
-            if df is not None:
-                st.write("**DataFrame shape:**", df.shape)
-                st.write("**First 5 rows:**")
-                st.dataframe(df.head())
+        
+        if df is not None:
+            with st.expander("📊 DataFrame Debug Info", expanded=True):
+                st.write("**Shape:**", df.shape)
+                st.write("**Data types:**")
+                st.write(df.dtypes)
+                st.write("**First 10 rows:**")
+                st.dataframe(df.head(10))
+        
         return {}
 # ==============================================================
 # CORE SPECTRAL ANALYSIS FUNCTIONS
@@ -1426,3 +1556,4 @@ st.markdown("""
 📧 varun.solanki@fau.de | Friedrich-Alexander-Universität Erlangen-Nürnberg
 </div>
 """, unsafe_allow_html=True)
+
