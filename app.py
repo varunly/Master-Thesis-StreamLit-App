@@ -1,6 +1,6 @@
 # ==============================================================
 # Streamlit App: Random Laser ASC Analyzer
-# WITH GAUSSIAN ERROR CORRECTION & PROPER UNCERTAINTY ANALYSIS
+# WITH GAUSSIAN ERROR CORRECTION & THICKNESS-DEPENDENT ENERGY
 # ==============================================================
 import streamlit as st
 import pandas as pd
@@ -26,7 +26,7 @@ except:
     KALEIDO_AVAILABLE = False
 
 # ==============================================================
-# DATA CLASSES (UPDATED WITH UNCERTAINTIES)
+# DATA CLASSES (WITH UNCERTAINTIES)
 # ==============================================================
 @dataclass
 class FitResult:
@@ -41,7 +41,7 @@ class FitResult:
     fit_params: Dict
     fit_success: bool = True
     
-    # NEW: Uncertainty estimates from Gaussian error propagation
+    # Uncertainty estimates
     peak_intensity_uncertainty: float = 0.0
     integrated_intensity_uncertainty: float = 0.0
     wavelength_uncertainty: float = 0.0
@@ -55,7 +55,7 @@ class ThresholdAnalysis:
     slope_below: float
     slope_above: float
     threshold_found: bool
-    threshold_uncertainty: float = 0.0  # NEW
+    threshold_uncertainty: float = 0.0
 
 # ==============================================================
 # SAMPLE METADATA EXTRACTION
@@ -203,7 +203,21 @@ def apply_nd_correction(counts: np.ndarray, nd_value: float) -> np.ndarray:
 # ENERGY CALIBRATION PARSER (WITH THICKNESS SUPPORT)
 # ==============================================================
 def parse_pasted_energy_data(pasted_text: str) -> Dict:
-    """Parse pasted energy calibration data with optional thickness support"""
+    """
+    Parse pasted energy calibration data with optional thickness support
+    
+    Format 1 (Simple - no thickness):
+    200  190  180  170
+    0.008  0.025  0.058  0.122
+    ...
+    
+    Format 2 (With thickness in first column):
+    Thickness  200  190  180  170
+    3          0.008  0.025  0.058  0.122
+    5          0.010  0.030  0.070  0.150
+    7          0.012  0.035  0.082  0.178
+    ...
+    """
     energy_map = {}
     has_thickness = False
     
@@ -214,7 +228,9 @@ def parse_pasted_energy_data(pasted_text: str) -> Dict:
             st.error("❌ Need at least 2 rows (header + measurements)")
             return {}
         
+        # Parse first line
         first_line = lines[0]
+        qs_values = None
         
         for sep in ['\t', ',', ';', ' ']:
             parts = [p.strip() for p in first_line.split(sep) if p.strip()]
@@ -222,15 +238,15 @@ def parse_pasted_energy_data(pasted_text: str) -> Dict:
                 if parts[0].lower() in ['thickness', 't', 'thick']:
                     has_thickness = True
                     qs_values = [float(x) for x in parts[1:]]
-                    st.success(f"✅ Detected THICKNESS-DEPENDENT format")
-                    st.info(f"✅ Found {len(qs_values)} QS levels: {qs_values}")
+                    st.success("✅ Detected THICKNESS-DEPENDENT format")
+                    st.info(f"✅ QS levels: {qs_values}")
                 else:
                     try:
                         qs_values = [float(x) for x in parts]
                         if all(100 <= x <= 500 for x in qs_values):
                             has_thickness = False
-                            st.success(f"✅ Detected SIMPLE format (no thickness)")
-                            st.info(f"✅ Found {len(qs_values)} QS levels: {qs_values}")
+                            st.success("✅ Detected SIMPLE format (no thickness)")
+                            st.info(f"✅ QS levels: {qs_values}")
                         else:
                             continue
                     except:
@@ -276,7 +292,6 @@ def parse_pasted_energy_data(pasted_text: str) -> Dict:
                         }
             
             st.success(f"✅ Parsed {len(energy_map)} thickness levels with {len(qs_values)} QS levels each")
-            
         else:
             temp_map = {qs: [] for qs in qs_values}
             data_rows = lines[1:]
@@ -316,7 +331,6 @@ def parse_pasted_energy_data(pasted_text: str) -> Dict:
         st.code(traceback.format_exc())
         return {}
 
-
 def interpolate_energy(qs_value: float, thickness_value: Optional[float], 
                        energy_map: Dict) -> Tuple[float, float]:
     """Interpolate energy for a given QS and thickness using the calibration map"""
@@ -346,10 +360,8 @@ def interpolate_energy(qs_value: float, thickness_value: Optional[float],
                 
                 t = (qs_value - qs1) / (qs2 - qs1)
                 return e1 + t * (e2 - e1), std1 + t * (std2 - std1)
-    
     else:
         available_thicknesses = sorted([t for t in thickness_keys if t is not None])
-        
         if not available_thicknesses:
             return np.nan, np.nan
         
@@ -377,7 +389,6 @@ def interpolate_energy(qs_value: float, thickness_value: Optional[float],
                     
                     t = (qs_value - qs1) / (qs2 - qs1)
                     return e1 + t * (e2 - e1), std1 + t * (std2 - std1)
-        
         else:
             if thickness_value < min(available_thicknesses):
                 thickness_value = min(available_thicknesses)
@@ -389,23 +400,20 @@ def interpolate_energy(qs_value: float, thickness_value: Optional[float],
                     if t1 <= thickness_value <= t2:
                         e1, std1 = interpolate_energy(qs_value, t1, {t1: energy_map[t1]})
                         e2, std2 = interpolate_energy(qs_value, t2, {t2: energy_map[t2]})
-                        
                         t_frac = (thickness_value - t1) / (t2 - t1)
                         return e1 + t_frac * (e2 - e1), std1 + t_frac * (std2 - std1)
             
             qs_map = energy_map[thickness_value]
             qs_levels = sorted(qs_map.keys())
-            
             if qs_value in qs_map:
                 return qs_map[qs_value]['mean'], qs_map[qs_value]['std']
-            
             nearest_qs = min(qs_levels, key=lambda x: abs(x - qs_value))
             return qs_map[nearest_qs]['mean'], qs_map[nearest_qs]['std']
     
     return np.nan, np.nan
 
 # ==============================================================
-# GAUSSIAN ERROR PROPAGATION & NORMALIZATION (NEW!)
+# GAUSSIAN ERROR PROPAGATION & NORMALIZATION
 # ==============================================================
 def propagate_gaussian_error(intensity: float, intensity_std: float, 
                             energy: float, energy_std: float,
@@ -415,94 +423,57 @@ def propagate_gaussian_error(intensity: float, intensity_std: float,
     
     For I_norm = I / E^n:
     σ(I_norm) = I_norm × √[(σ_I/I)² + (n×σ_E/E)²]
-    
-    Returns: (normalized_value, propagated_uncertainty)
     """
-    
     if normalization_mode == 'none':
         return intensity, intensity_std
     
-    elif normalization_mode == 'linear':  # I/E
-        if energy == 0 or np.isnan(energy):
-            return np.nan, np.nan
-        
+    if energy == 0 or np.isnan(energy):
+        return np.nan, np.nan
+    
+    if normalization_mode == 'linear':  # I/E
         I_norm = intensity / energy
-        
-        # Error propagation: σ = I_norm × √[(σ_I/I)² + (σ_E/E)²]
-        rel_error_I = intensity_std / intensity if intensity != 0 else 0
-        rel_error_E = energy_std / energy if energy != 0 else 0
-        
-        sigma_norm = I_norm * np.sqrt(rel_error_I**2 + rel_error_E**2)
-        
+        rel_I = intensity_std / intensity if intensity != 0 else 0
+        rel_E = energy_std / energy if energy != 0 else 0
+        sigma_norm = I_norm * np.sqrt(rel_I**2 + rel_E**2)
         return I_norm, sigma_norm
     
-    elif normalization_mode == 'quadratic':  # I/E²
-        if energy == 0 or np.isnan(energy):
-            return np.nan, np.nan
-        
+    if normalization_mode == 'quadratic':  # I/E²
         I_norm = intensity / (energy ** 2)
-        
-        # Error propagation with n=2
-        rel_error_I = intensity_std / intensity if intensity != 0 else 0
-        rel_error_E = energy_std / energy if energy != 0 else 0
-        
-        sigma_norm = I_norm * np.sqrt(rel_error_I**2 + (2 * rel_error_E)**2)
-        
+        rel_I = intensity_std / intensity if intensity != 0 else 0
+        rel_E = energy_std / energy if energy != 0 else 0
+        sigma_norm = I_norm * np.sqrt(rel_I**2 + (2 * rel_E)**2)
         return I_norm, sigma_norm
     
-    else:
-        return intensity, intensity_std
-
+    return intensity, intensity_std
 
 def calculate_total_uncertainty(spectrum_uncertainty: float, 
                                 energy_uncertainty: float,
                                 intensity: float,
                                 pump_energy: float) -> float:
-    """
-    Calculate total measurement uncertainty accounting for:
-    1. Spectral measurement uncertainty (fitting error, SNR)
-    2. Pump energy Gaussian distribution
-    
-    Returns combined uncertainty
-    """
+    """Combine spectral and energy uncertainties (Gaussian quadrature)"""
     if intensity == 0 or pump_energy == 0:
-        return 0.0
-    
-    # Relative uncertainties
+        return spectrum_uncertainty
     rel_spectrum = spectrum_uncertainty / intensity if intensity != 0 else 0
     rel_energy = energy_uncertainty / pump_energy if pump_energy != 0 else 0
-    
-    # Combined relative uncertainty (quadrature sum)
     rel_total = np.sqrt(rel_spectrum**2 + rel_energy**2)
-    
-    # Absolute uncertainty
-    total_uncertainty = intensity * rel_total
-    
-    return total_uncertainty
-
+    return intensity * rel_total
 
 def weighted_least_squares_threshold(energies: np.ndarray, 
                                      intensities: np.ndarray,
                                      energy_uncertainties: np.ndarray,
                                      intensity_uncertainties: np.ndarray) -> Dict:
     """
-    Fit threshold with Gaussian-weighted least squares
-    
-    Weights account for both energy and intensity uncertainties
+    Gaussian-weighted threshold fit:
+    Weights include both intensity and energy uncertainties
     """
-    # Calculate weights: w_i = 1/σ_total²
     total_uncertainties = np.sqrt(
         intensity_uncertainties**2 + 
         (intensities * energy_uncertainties / (energies + 1e-10))**2
     )
-    
-    # Avoid division by zero
     total_uncertainties = np.where(total_uncertainties > 0, total_uncertainties, 1.0)
-    
     weights = 1 / (total_uncertainties**2)
-    weights = weights / np.sum(weights)  # Normalize
+    weights = weights / np.sum(weights)
     
-    # Find best threshold point using weighted bi-linear fit
     best_threshold = None
     best_residual = np.inf
     best_slopes = (0, 0)
@@ -517,13 +488,10 @@ def weighted_least_squares_threshold(energies: np.ndarray,
         w_above = weights[i:]
         
         try:
-            # Weighted linear regression
             p_below = np.polyfit(E_below, I_below, 1, w=w_below)
             p_above = np.polyfit(E_above, I_above, 1, w=w_above)
             
-            # Check if above slope > below slope (lasing criterion)
             if p_above[0] > 2 * p_below[0]:
-                # Calculate weighted residuals
                 residual_below = np.sum(w_below * (I_below - np.polyval(p_below, E_below))**2)
                 residual_above = np.sum(w_above * (I_above - np.polyval(p_above, E_above))**2)
                 total_residual = residual_below + residual_above
@@ -535,12 +503,10 @@ def weighted_least_squares_threshold(energies: np.ndarray,
         except:
             continue
     
-    # Calculate threshold uncertainty from fit
     if best_threshold is not None:
-        # Find points near threshold
-        near_threshold = np.abs(energies - best_threshold) < 0.2 * best_threshold
-        if np.sum(near_threshold) > 0:
-            threshold_uncertainty = np.mean(energy_uncertainties[near_threshold])
+        near = np.abs(energies - best_threshold) < 0.2 * best_threshold
+        if np.sum(near) > 0:
+            threshold_uncertainty = np.mean(energy_uncertainties[near])
         else:
             threshold_uncertainty = np.mean(energy_uncertainties)
     else:
@@ -555,27 +521,24 @@ def weighted_least_squares_threshold(energies: np.ndarray,
     }
 
 # ==============================================================
-# CORE SPECTRAL ANALYSIS FUNCTIONS (UPDATED WITH UNCERTAINTIES)
+# CORE SPECTRAL ANALYSIS FUNCTIONS
 # ==============================================================
 def lorentzian(x: np.ndarray, A: float, x0: float, gamma: float, y0: float) -> np.ndarray:
-    """Lorentzian lineshape function"""
     return A * (gamma**2 / ((x - x0)**2 + gamma**2)) + y0
 
 def calculate_r_squared(y_actual: np.ndarray, y_fit: np.ndarray) -> float:
-    """Calculate coefficient of determination (R²)"""
     ss_res = np.sum((y_actual - y_fit) ** 2)
     ss_tot = np.sum((y_actual - np.mean(y_actual)) ** 2)
     return 1 - (ss_res / ss_tot) if ss_tot > 0 else 0
 
 def calculate_snr(signal: np.ndarray, noise_percentile: int = 10) -> float:
-    """Calculate signal-to-noise ratio"""
     noise = np.percentile(signal, noise_percentile)
     peak = np.max(signal)
     return peak / noise if noise > 0 else np.inf
 
 @st.cache_data
 def analyze_spectrum(wl: np.ndarray, counts: np.ndarray) -> FitResult:
-    """Perform Lorentzian fitting with Gaussian uncertainty estimation"""
+    """Perform Lorentzian fitting with uncertainty estimation"""
     try:
         peak_idx = np.argmax(counts)
         x0_init = wl[peak_idx]
@@ -614,22 +577,14 @@ def analyze_spectrum(wl: np.ndarray, counts: np.ndarray) -> FitResult:
         if r_squared < 0.3:
             raise ValueError(f"Poor fit quality: R² = {r_squared:.3f}")
         
-        # NEW: Calculate uncertainties from fit covariance
         param_uncertainties = np.sqrt(np.diag(pcov))
-        
-        # Peak intensity uncertainty (from amplitude + baseline)
-        amplitude_unc = param_uncertainties[0]  # σ_A
-        baseline_unc = param_uncertainties[3]   # σ_y0
-        peak_intensity_unc = np.sqrt(amplitude_unc**2 + baseline_unc**2)
-        
-        # Wavelength uncertainty (from center position)
-        wavelength_unc = param_uncertainties[1]  # σ_x0
-        
-        # FWHM uncertainty (from gamma)
+        amplitude_unc = param_uncertainties[0]
+        center_unc = param_uncertainties[1]
         gamma_unc = param_uncertainties[2]
-        fwhm_unc = 2 * gamma_unc
+        baseline_unc = param_uncertainties[3]
         
-        # Integrated intensity uncertainty (approximate from amplitude)
+        peak_intensity_unc = np.sqrt(amplitude_unc**2 + baseline_unc**2)
+        fwhm_unc = 2 * gamma_unc
         integrated_unc = amplitude_unc * (area / A) if A > 0 else 0
         
         fit_params = {
@@ -643,7 +598,7 @@ def analyze_spectrum(wl: np.ndarray, counts: np.ndarray) -> FitResult:
             fit_success=True,
             peak_intensity_uncertainty=float(peak_intensity_unc),
             integrated_intensity_uncertainty=float(integrated_unc),
-            wavelength_uncertainty=float(wavelength_unc),
+            wavelength_uncertainty=float(center_unc),
             fwhm_uncertainty=float(fwhm_unc)
         )
         
@@ -666,17 +621,16 @@ def analyze_spectrum(wl: np.ndarray, counts: np.ndarray) -> FitResult:
             float(np.trapz(counts - np.min(counts), wl)),
             counts.copy(), 0.0, float(calculate_snr(counts)),
             {'error': str(e)}, fit_success=False,
-            peak_intensity_uncertainty=float(peak_int * 0.1),  # 10% estimate
+            peak_intensity_uncertainty=float(peak_int * 0.1),
             integrated_intensity_uncertainty=float(peak_int * 0.15),
-            wavelength_uncertainty=0.5,  # 0.5 nm estimate
+            wavelength_uncertainty=0.5,
             fwhm_uncertainty=1.0
         )
 
 # ==============================================================
-# THRESHOLD DETECTION (KEPT FOR COMPATIBILITY)
+# THRESHOLD DETECTION (BASIC)
 # ==============================================================
 def detect_threshold(x_values: np.ndarray, intensities: np.ndarray, min_points: int = 3) -> ThresholdAnalysis:
-    """Detect lasing threshold using broken-stick algorithm"""
     if len(x_values) < 2 * min_points:
         return ThresholdAnalysis(None, None, 0, 0, False, 0.0)
     
@@ -712,25 +666,20 @@ def detect_threshold(x_values: np.ndarray, intensities: np.ndarray, min_points: 
 # ==============================================================
 @st.cache_data
 def parse_asc_file(file_content: str, skip_rows: int) -> Tuple[np.ndarray, np.ndarray]:
-    """Parse .asc file"""
     df = pd.read_csv(StringIO(file_content), sep='\t', decimal=',', skiprows=skip_rows, engine='python')
     df = df.dropna(axis=1, how='all')
-    
     if df.shape[1] < 2:
         raise ValueError("File must have at least 2 columns")
-    
     wl = df.iloc[:, 0].to_numpy()
     counts = df.iloc[:, 1:].mean(axis=1).to_numpy()
-    
     return wl, counts
 
 # ==============================================================
-# VISUALIZATION FUNCTIONS (UPDATED WITH ERROR BARS)
+# VISUALIZATION FUNCTIONS
 # ==============================================================
 def create_spectrum_plot(wl: np.ndarray, counts_raw: np.ndarray, counts_corrected: np.ndarray,
                         fit_result: FitResult, filename: str, nd_value: float, 
                         energy_mean: float = None, energy_std: float = None) -> go.Figure:
-    """Create spectrum plot with fit overlay"""
     fig = go.Figure()
     
     if nd_value > 0:
@@ -753,9 +702,11 @@ def create_spectrum_plot(wl: np.ndarray, counts_raw: np.ndarray, counts_correcte
         half_max = fit_result.peak_intensity / 2
         
         fig.add_trace(go.Scatter(x=[x0-gamma, x0+gamma], y=[half_max, half_max],
-                                mode='markers+text', marker=dict(size=12, color='orange', symbol='diamond'),
+                                mode='markers+text',
+                                marker=dict(size=12, color='orange', symbol='diamond'),
                                 name=f'FWHM = {fit_result.fwhm:.2f} nm',
-                                text=['', f'FWHM={fit_result.fwhm:.2f}nm'], textposition='top center'))
+                                text=['', f'FWHM={fit_result.fwhm:.2f}nm'],
+                                textposition='top center'))
         
         fig.add_shape(type="line", x0=x0-gamma, y0=half_max, x1=x0+gamma, y1=half_max,
                      line=dict(color="orange", width=2, dash="dash"))
@@ -766,33 +717,197 @@ def create_spectrum_plot(wl: np.ndarray, counts_raw: np.ndarray, counts_correcte
     if nd_value > 0:
         title_html += f"<sub>OD: {nd_value} (×{10**nd_value:.0f})</sub><br>"
     if fit_result.fit_success:
-        title_html += f"<sub>Peak: {fit_result.peak_wavelength:.2f}±{fit_result.wavelength_uncertainty:.2f} nm | "
-        title_html += f"FWHM: {fit_result.fwhm:.2f}±{fit_result.fwhm_uncertainty:.2f} nm | R²: {fit_result.r_squared:.4f}</sub>"
+        title_html += (
+            f"<sub>Peak: {fit_result.peak_wavelength:.2f}±{fit_result.wavelength_uncertainty:.2f} nm | "
+            f"FWHM: {fit_result.fwhm:.2f}±{fit_result.fwhm_uncertainty:.2f} nm | "
+            f"R²: {fit_result.r_squared:.4f}</sub>"
+        )
     
     fig.update_layout(title=title_html, xaxis_title="Wavelength (nm)", yaxis_title="Intensity (counts)",
                      template="plotly_white", hovermode="x unified", height=500, showlegend=True)
     
     return fig
 
+def create_energy_wavelength_plot(df: pd.DataFrame, show_error_bars: bool = True) -> go.Figure:
+    """Energy vs Peak Wavelength with Gaussian error bars for wavelength and energy."""
+    from scipy.interpolate import make_interp_spline
+    
+    fig = go.Figure()
+    
+    if 'Pump Energy (mJ)' not in df.columns or df['Pump Energy (mJ)'].isna().all():
+        st.warning("⚠️ Energy calibration data not available")
+        return None
+    
+    if 'Sample Label Short' in df.columns:
+        groups = df.groupby('Sample Label Short')
+        colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', 
+                  '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf']
+        
+        for idx, (label, group_df) in enumerate(groups):
+            if label == "No Label":
+                continue
+            
+            group_df = group_df.dropna(subset=['Pump Energy (mJ)', 'Peak λ (nm)'])
+            if len(group_df) == 0:
+                continue
+            
+            group_df = group_df.sort_values('Pump Energy (mJ)')
+            x_data = group_df['Pump Energy (mJ)'].values
+            y_data = group_df['Peak λ (nm)'].values
+            color = colors[idx % len(colors)]
+            
+            # Smooth curve
+            if len(x_data) >= 4:
+                try:
+                    spline = make_interp_spline(x_data, y_data, k=min(3, len(x_data)-1))
+                    x_smooth = np.linspace(x_data.min(), x_data.max(), 200)
+                    y_smooth = spline(x_smooth)
+                    fig.add_trace(go.Scatter(
+                        x=x_smooth, y=y_smooth, mode='lines',
+                        line=dict(width=3, color=color),
+                        name=label, showlegend=True, legendgroup=label
+                    ))
+                except:
+                    pass
+            
+            # Gaussian error bars for wavelength (σ_λ) and energy (σ_E)
+            error_x = group_df['Energy Std (mJ)'].values if 'Energy Std (mJ)' in group_df.columns else None
+            error_y = group_df['Wavelength Uncertainty'].values if 'Wavelength Uncertainty' in group_df.columns else None
+            
+            fig.add_trace(go.Scatter(
+                x=x_data, y=y_data, mode='markers',
+                marker=dict(size=12, color=color, symbol='circle', line=dict(width=2, color='white')),
+                name=label, showlegend=False, legendgroup=label,
+                error_x=dict(
+                    type='data', array=error_x,
+                    visible=show_error_bars and error_x is not None,
+                    thickness=1.5, width=4
+                ),
+                error_y=dict(
+                    type='data', array=error_y,
+                    visible=show_error_bars and error_y is not None,
+                    thickness=1.5, width=4
+                ),
+                hovertemplate=(
+                    f'<b>{label}</b><br>'
+                    'Energy: %{x:.4f} mJ<br>'
+                    'Peak λ: %{y:.2f} nm<br>'
+                    '<extra></extra>'
+                )
+            ))
+    
+    fig.update_layout(
+        title="<b>Peak Wavelength vs Pump Energy</b><br><sub>With Gaussian error bars for wavelength and energy</sub>",
+        xaxis_title="Pump Energy (mJ)", yaxis_title="Peak Wavelength (nm)",
+        template="plotly_white", hovermode="closest", height=600, showlegend=True,
+        legend=dict(title="Sample Conditions", x=1.02, y=1,
+                   bgcolor='rgba(255,255,255,0.8)', bordercolor='black', borderwidth=1)
+    )
+    
+    return fig
+
+def create_energy_intensity_plot(df: pd.DataFrame, show_error_bars: bool = True) -> go.Figure:
+    """Energy vs Peak Intensity with Gaussian error bars."""
+    from scipy.interpolate import make_interp_spline
+    
+    fig = go.Figure()
+    
+    if 'Pump Energy (mJ)' not in df.columns or df['Pump Energy (mJ)'].isna().all():
+        st.warning("⚠️ Energy calibration data not available")
+        return None
+    
+    if 'Sample Label Short' in df.columns:
+        groups = df.groupby('Sample Label Short')
+        colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', 
+                  '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf']
+        
+        for idx, (label, group_df) in enumerate(groups):
+            if label == "No Label":
+                continue
+            
+            group_df = group_df.dropna(subset=['Pump Energy (mJ)', 'Peak Intensity'])
+            if len(group_df) == 0:
+                continue
+            
+            group_df = group_df.sort_values('Pump Energy (mJ)')
+            x_data = group_df['Pump Energy (mJ)'].values
+            y_data = group_df['Peak Intensity'].values
+            color = colors[idx % len(colors)]
+            
+            # Smooth curve
+            if len(x_data) >= 4:
+                try:
+                    spline = make_interp_spline(x_data, y_data, k=min(3, len(x_data)-1))
+                    x_smooth = np.linspace(x_data.min(), x_data.max(), 200)
+                    y_smooth = spline(x_smooth)
+                    fig.add_trace(go.Scatter(
+                        x=x_smooth, y=y_smooth, mode='lines',
+                        line=dict(width=3, color=color),
+                        name=label, showlegend=True, legendgroup=label
+                    ))
+                except:
+                    pass
+            
+            # Gaussian error bars
+            error_x = group_df['Energy Std (mJ)'].values if 'Energy Std (mJ)' in group_df.columns else None
+            error_y = group_df['Peak Intensity Uncertainty'].values if 'Peak Intensity Uncertainty' in group_df.columns else None
+            
+            fig.add_trace(go.Scatter(
+                x=x_data, y=y_data, mode='markers',
+                marker=dict(size=12, color=color, symbol='circle', line=dict(width=2, color='white')),
+                name=label, showlegend=False, legendgroup=label,
+                error_x=dict(
+                    type='data', array=error_x,
+                    visible=show_error_bars and error_x is not None,
+                    thickness=1.5, width=4
+                ),
+                error_y=dict(
+                    type='data', array=error_y,
+                    visible=show_error_bars and error_y is not None,
+                    thickness=1.5, width=4
+                ),
+                hovertemplate=(
+                    f'<b>{label}</b><br>'
+                    'Energy: %{x:.4f} mJ<br>'
+                    'Peak Intensity: %{y:.0f}<br>'
+                    '<extra></extra>'
+                )
+            ))
+    
+    fig.update_layout(
+        title="<b>Peak Intensity vs Pump Energy</b><br><sub>With Gaussian error bars</sub>",
+        xaxis_title="Pump Energy (mJ)", yaxis_title="Peak Intensity (counts)",
+        template="plotly_white", hovermode="closest", height=600, showlegend=True,
+        legend=dict(title="Sample Conditions", x=1.02, y=1,
+                   bgcolor='rgba(255,255,255,0.8)', bordercolor='black', borderwidth=1)
+    )
+    
+    return fig
+
 def create_threshold_plot(df: pd.DataFrame, threshold: ThresholdAnalysis, use_energy: bool = True, 
                           show_error_bars: bool = True) -> go.Figure:
-    """Create threshold analysis with smooth curves and Gaussian error bars"""
+    """Threshold dashboard with Gaussian error bars."""
     from scipy.interpolate import make_interp_spline
     
     x_col = 'Pump Energy (mJ)' if use_energy and 'Pump Energy (mJ)' in df.columns else 'QS Level'
     x_label = "Pump Energy (mJ)" if use_energy else "Q-Switch Level"
     
-    fig = make_subplots(rows=2, cols=2,
-                       subplot_titles=(f"Integrated Intensity vs {x_label}", f"FWHM vs {x_label}",
-                                      f"Peak Wavelength vs {x_label}", f"Peak Intensity vs {x_label}"),
-                       vertical_spacing=0.12, horizontal_spacing=0.1)
+    fig = make_subplots(
+        rows=2, cols=2,
+        subplot_titles=(
+            f"Integrated Intensity vs {x_label}",
+            f"FWHM vs {x_label}",
+            f"Peak Wavelength vs {x_label}",
+            f"Peak Intensity vs {x_label}"
+        ),
+        vertical_spacing=0.12, horizontal_spacing=0.1
+    )
     
     valid = df.dropna(subset=[x_col])
     x_values = valid[x_col].values
     sort_idx = np.argsort(x_values)
     x_sorted = x_values[sort_idx]
     
-    # Calculate ranges
     int_min, int_max = valid['Integrated Intensity'].min(), valid['Integrated Intensity'].max()
     int_padding = (int_max - int_min) * 0.1
     int_range = [int_min - int_padding, int_max + int_padding]
@@ -820,78 +935,107 @@ def create_threshold_plot(df: pd.DataFrame, threshold: ThresholdAnalysis, use_en
         except:
             return x, y
     
+    # Common error arrays
+    error_x_array = valid['Energy Std (mJ)'].values[sort_idx] if 'Energy Std (mJ)' in valid.columns else None
+    error_int_array = valid['Integrated Uncertainty'].values[sort_idx] if 'Integrated Uncertainty' in valid.columns else None
+    error_fwhm_array = valid['FWHM Uncertainty'].values[sort_idx] if 'FWHM Uncertainty' in valid.columns else None
+    error_wl_array = valid['Wavelength Uncertainty'].values[sort_idx] if 'Wavelength Uncertainty' in valid.columns else None
+    error_peak_array = valid['Peak Intensity Uncertainty'].values[sort_idx] if 'Peak Intensity Uncertainty' in valid.columns else None
+    
     # Plot 1: Integrated Intensity
     y_int = valid['Integrated Intensity'].values[sort_idx]
     x_smooth, y_smooth = create_smooth_curve(x_sorted, y_int)
     fig.add_trace(go.Scatter(x=x_smooth, y=y_smooth, mode='lines',
-                            line=dict(width=3, color='red', shape='spline'), showlegend=False), row=1, col=1)
-    
-    # Error bars
-    error_x_array = valid['Energy Std (mJ)'].values[sort_idx] if 'Energy Std (mJ)' in valid.columns else None
-    error_y_array = valid['Integrated Uncertainty'].values[sort_idx] if 'Integrated Uncertainty' in valid.columns else None
-    
-    fig.add_trace(go.Scatter(x=x_sorted, y=y_int, mode='markers',
-                            marker=dict(size=10, color='red', symbol='circle', line=dict(width=2, color='white')),
-                            error_x=dict(type='data', array=error_x_array, visible=show_error_bars and error_x_array is not None,
-                                       thickness=1.5, width=4, color='rgba(255,0,0,0.3)'),
-                            error_y=dict(type='data', array=error_y_array, visible=show_error_bars and error_y_array is not None,
-                                       thickness=1.5, width=4, color='rgba(255,0,0,0.3)'),
-                            showlegend=False), row=1, col=1)
-    
+                             line=dict(width=3, color='red'), showlegend=False),
+                  row=1, col=1)
+    fig.add_trace(go.Scatter(
+        x=x_sorted, y=y_int, mode='markers',
+        marker=dict(size=10, color='red', line=dict(width=2, color='white')),
+        error_x=dict(
+            type='data', array=error_x_array,
+            visible=show_error_bars and error_x_array is not None,
+            thickness=1.5, width=4, color='rgba(255,0,0,0.3)'
+        ),
+        error_y=dict(
+            type='data', array=error_int_array,
+            visible=show_error_bars and error_int_array is not None,
+            thickness=1.5, width=4, color='rgba(255,0,0,0.3)'
+        ),
+        showlegend=False
+    ), row=1, col=1)
     if threshold.threshold_found and threshold.threshold_energy:
-        fig.add_vline(x=threshold.threshold_energy, line_dash="dash", line_color="green", line_width=2,
-                     annotation_text=f"Threshold: {threshold.threshold_energy:.4f} mJ",
-                     annotation_position="top", row=1, col=1)
+        fig.add_vline(
+            x=threshold.threshold_energy, line_dash="dash", line_color="green", line_width=2,
+            annotation_text=f"Threshold: {threshold.threshold_energy:.4f} mJ",
+            annotation_position="top", row=1, col=1
+        )
     
     # Plot 2: FWHM
     y_fwhm = valid['FWHM (nm)'].values[sort_idx]
     x_smooth, y_smooth = create_smooth_curve(x_sorted, y_fwhm)
     fig.add_trace(go.Scatter(x=x_smooth, y=y_smooth, mode='lines',
-                            line=dict(width=3, color='blue', shape='spline'), showlegend=False), row=1, col=2)
-    
-    error_y_fwhm = valid['FWHM Uncertainty'].values[sort_idx] if 'FWHM Uncertainty' in valid.columns else None
-    
-    fig.add_trace(go.Scatter(x=x_sorted, y=y_fwhm, mode='markers',
-                            marker=dict(size=10, color='blue', symbol='circle', line=dict(width=2, color='white')),
-                            error_x=dict(type='data', array=error_x_array, visible=show_error_bars and error_x_array is not None,
-                                       thickness=1.5, width=4, color='rgba(0,0,255,0.3)'),
-                            error_y=dict(type='data', array=error_y_fwhm, visible=show_error_bars and error_y_fwhm is not None,
-                                       thickness=1.5, width=4, color='rgba(0,0,255,0.3)'),
-                            showlegend=False), row=1, col=2)
+                             line=dict(width=3, color='blue'), showlegend=False),
+                  row=1, col=2)
+    fig.add_trace(go.Scatter(
+        x=x_sorted, y=y_fwhm, mode='markers',
+        marker=dict(size=10, color='blue', line=dict(width=2, color='white')),
+        error_x=dict(
+            type='data', array=error_x_array,
+            visible=show_error_bars and error_x_array is not None,
+            thickness=1.5, width=4, color='rgba(0,0,255,0.3)'
+        ),
+        error_y=dict(
+            type='data', array=error_fwhm_array,
+            visible=show_error_bars and error_fwhm_array is not None,
+            thickness=1.5, width=4, color='rgba(0,0,255,0.3)'
+        ),
+        showlegend=False
+    ), row=1, col=2)
     
     # Plot 3: Peak Wavelength
     y_wl = valid['Peak λ (nm)'].values[sort_idx]
     x_smooth, y_smooth = create_smooth_curve(x_sorted, y_wl)
     fig.add_trace(go.Scatter(x=x_smooth, y=y_smooth, mode='lines',
-                            line=dict(width=3, color='purple', shape='spline'), showlegend=False), row=2, col=1)
-    
-    error_y_wl = valid['Wavelength Uncertainty'].values[sort_idx] if 'Wavelength Uncertainty' in valid.columns else None
-    
-    fig.add_trace(go.Scatter(x=x_sorted, y=y_wl, mode='markers',
-                            marker=dict(size=10, color='purple', symbol='circle', line=dict(width=2, color='white')),
-                            error_x=dict(type='data', array=error_x_array, visible=show_error_bars and error_x_array is not None,
-                                       thickness=1.5, width=4, color='rgba(128,0,128,0.3)'),
-                            error_y=dict(type='data', array=error_y_wl, visible=show_error_bars and error_y_wl is not None,
-                                       thickness=1.5, width=4, color='rgba(128,0,128,0.3)'),
-                            showlegend=False), row=2, col=1)
+                             line=dict(width=3, color='purple'), showlegend=False),
+                  row=2, col=1)
+    fig.add_trace(go.Scatter(
+        x=x_sorted, y=y_wl, mode='markers',
+        marker=dict(size=10, color='purple', line=dict(width=2, color='white')),
+        error_x=dict(
+            type='data', array=error_x_array,
+            visible=show_error_bars and error_x_array is not None,
+            thickness=1.5, width=4, color='rgba(128,0,128,0.3)'
+        ),
+        error_y=dict(
+            type='data', array=error_wl_array,
+            visible=show_error_bars and error_wl_array is not None,
+            thickness=1.5, width=4, color='rgba(128,0,128,0.3)'
+        ),
+        showlegend=False
+    ), row=2, col=1)
     
     # Plot 4: Peak Intensity
     y_peak = valid['Peak Intensity'].values[sort_idx]
     x_smooth, y_smooth = create_smooth_curve(x_sorted, y_peak)
     fig.add_trace(go.Scatter(x=x_smooth, y=y_smooth, mode='lines',
-                            line=dict(width=3, color='orange', shape='spline'), showlegend=False), row=2, col=2)
+                             line=dict(width=3, color='orange'), showlegend=False),
+                  row=2, col=2)
+    fig.add_trace(go.Scatter(
+        x=x_sorted, y=y_peak, mode='markers',
+        marker=dict(size=10, color='orange', line=dict(width=2, color='white')),
+        error_x=dict(
+            type='data', array=error_x_array,
+            visible=show_error_bars and error_x_array is not None,
+            thickness=1.5, width=4, color='rgba(255,165,0,0.3)'
+        ),
+        error_y=dict(
+            type='data', array=error_peak_array,
+            visible=show_error_bars and error_peak_array is not None,
+            thickness=1.5, width=4, color='rgba(255,165,0,0.3)'
+        ),
+        showlegend=False
+    ), row=2, col=2)
     
-    error_y_peak = valid['Peak Intensity Uncertainty'].values[sort_idx] if 'Peak Intensity Uncertainty' in valid.columns else None
-    
-    fig.add_trace(go.Scatter(x=x_sorted, y=y_peak, mode='markers',
-                            marker=dict(size=10, color='orange', symbol='circle', line=dict(width=2, color='white')),
-                            error_x=dict(type='data', array=error_x_array, visible=show_error_bars and error_x_array is not None,
-                                       thickness=1.5, width=4, color='rgba(255,165,0,0.3)'),
-                            error_y=dict(type='data', array=error_y_peak, visible=show_error_bars and error_y_peak is not None,
-                                       thickness=1.5, width=4, color='rgba(255,165,0,0.3)'),
-                            showlegend=False), row=2, col=2)
-    
-    # Update axes
     for row in [1, 2]:
         for col in [1, 2]:
             fig.update_xaxes(title_text=x_label, row=row, col=col)
@@ -901,141 +1045,14 @@ def create_threshold_plot(df: pd.DataFrame, threshold: ThresholdAnalysis, use_en
     fig.update_yaxes(title_text="Wavelength (nm)", range=wl_range, row=2, col=1)
     fig.update_yaxes(title_text="Counts", range=peak_range, row=2, col=2)
     
-    fig.update_layout(height=700, showlegend=False, template="plotly_white",
-                     title_text="<b>Threshold Analysis Dashboard</b><br><sub>With Gaussian Error Bars</sub>")
-    
-    return fig
-
-def create_energy_wavelength_plot(df: pd.DataFrame, show_error_bars: bool = True) -> go.Figure:
-    """Create Energy vs Peak Wavelength plot with Gaussian error bars"""
-    from scipy.interpolate import make_interp_spline
-    
-    fig = go.Figure()
-    
-    if 'Pump Energy (mJ)' not in df.columns or df['Pump Energy (mJ)'].isna().all():
-        st.warning("⚠️ Energy calibration data not available")
-        return None
-    
-    if 'Sample Label Short' in df.columns:
-        groups = df.groupby('Sample Label Short')
-        colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', 
-                  '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf']
-        
-        for idx, (label, group_df) in enumerate(groups):
-            if label == "No Label":
-                continue
-            
-            group_df = group_df.dropna(subset=['Pump Energy (mJ)', 'Peak λ (nm)'])
-            if len(group_df) == 0:
-                continue
-            
-            group_df = group_df.sort_values('Pump Energy (mJ)')
-            x_data = group_df['Pump Energy (mJ)'].values
-            y_data = group_df['Peak λ (nm)'].values
-            color = colors[idx % len(colors)]
-            
-            if len(x_data) >= 4:
-                try:
-                    spline = make_interp_spline(x_data, y_data, k=min(3, len(x_data)-1))
-                    x_smooth = np.linspace(x_data.min(), x_data.max(), 200)
-                    y_smooth = spline(x_smooth)
-                    fig.add_trace(go.Scatter(x=x_smooth, y=y_smooth, mode='lines',
-                                            line=dict(width=3, color=color),
-                                            name=label, showlegend=True, legendgroup=label))
-                except:
-                    pass
-            
-            # Error bars for wavelength
-            error_x = group_df['Energy Std (mJ)'].values if 'Energy Std (mJ)' in group_df.columns else None
-            error_y = group_df['Wavelength Uncertainty'].values if 'Wavelength Uncertainty' in group_df.columns else None
-            
-            fig.add_trace(go.Scatter(
-                x=x_data, y=y_data, mode='markers',
-                marker=dict(size=12, color=color, symbol='circle', line=dict(width=2, color='white')),
-                name=label, showlegend=False, legendgroup=label,
-                error_x=dict(type='data', array=error_x, visible=show_error_bars and error_x is not None,
-                           thickness=1.5, width=4),
-                error_y=dict(type='data', array=error_y, visible=show_error_bars and error_y is not None,
-                           thickness=1.5, width=4),
-                hovertemplate=f'<b>{label}</b><br>Energy: %{{x:.4f}} mJ<br>Peak λ: %{{y:.2f}} nm<br><extra></extra>'
-            ))
-    
     fig.update_layout(
-        title="<b>Peak Wavelength vs Pump Energy</b><br><sub>Grouped by Sample Conditions (with Gaussian errors)</sub>",
-        xaxis_title="Pump Energy (mJ)", yaxis_title="Peak Wavelength (nm)",
-        template="plotly_white", hovermode="closest", height=600, showlegend=True,
-        legend=dict(title="Sample Conditions", x=1.02, y=1,
-                   bgcolor='rgba(255,255,255,0.8)', bordercolor='black', borderwidth=1)
-    )
-    
-    return fig
-
-def create_energy_intensity_plot(df: pd.DataFrame, show_error_bars: bool = True) -> go.Figure:
-    """Create Energy vs Peak Intensity plot with Gaussian error bars"""
-    from scipy.interpolate import make_interp_spline
-    
-    fig = go.Figure()
-    
-    if 'Pump Energy (mJ)' not in df.columns or df['Pump Energy (mJ)'].isna().all():
-        st.warning("⚠️ Energy calibration data not available")
-        return None
-    
-    if 'Sample Label Short' in df.columns:
-        groups = df.groupby('Sample Label Short')
-        colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', 
-                  '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf']
-        
-        for idx, (label, group_df) in enumerate(groups):
-            if label == "No Label":
-                continue
-            
-            group_df = group_df.dropna(subset=['Pump Energy (mJ)', 'Peak Intensity'])
-            if len(group_df) == 0:
-                continue
-            
-            group_df = group_df.sort_values('Pump Energy (mJ)')
-            x_data = group_df['Pump Energy (mJ)'].values
-            y_data = group_df['Peak Intensity'].values
-            color = colors[idx % len(colors)]
-            
-            if len(x_data) >= 4:
-                try:
-                    spline = make_interp_spline(x_data, y_data, k=min(3, len(x_data)-1))
-                    x_smooth = np.linspace(x_data.min(), x_data.max(), 200)
-                    y_smooth = spline(x_smooth)
-                    fig.add_trace(go.Scatter(x=x_smooth, y=y_smooth, mode='lines',
-                                            line=dict(width=3, color=color),
-                                            name=label, showlegend=True, legendgroup=label))
-                except:
-                    pass
-            
-            # Error bars for intensity
-            error_x = group_df['Energy Std (mJ)'].values if 'Energy Std (mJ)' in group_df.columns else None
-            error_y = group_df['Peak Intensity Uncertainty'].values if 'Peak Intensity Uncertainty' in group_df.columns else None
-            
-            fig.add_trace(go.Scatter(
-                x=x_data, y=y_data, mode='markers',
-                marker=dict(size=12, color=color, symbol='circle', line=dict(width=2, color='white')),
-                name=label, showlegend=False, legendgroup=label,
-                error_x=dict(type='data', array=error_x, visible=show_error_bars and error_x is not None,
-                           thickness=1.5, width=4),
-                error_y=dict(type='data', array=error_y, visible=show_error_bars and error_y is not None,
-                           thickness=1.5, width=4),
-                hovertemplate=f'<b>{label}</b><br>Energy: %{{x:.4f}} mJ<br>Peak Intensity: %{{y:.0f}}<br><extra></extra>'
-            ))
-    
-    fig.update_layout(
-        title="<b>Peak Intensity vs Pump Energy</b><br><sub>Grouped by Sample Conditions (with Gaussian errors)</sub>",
-        xaxis_title="Pump Energy (mJ)", yaxis_title="Peak Intensity (counts)",
-        template="plotly_white", hovermode="closest", height=600, showlegend=True,
-        legend=dict(title="Sample Conditions", x=1.02, y=1,
-                   bgcolor='rgba(255,255,255,0.8)', bordercolor='black', borderwidth=1)
+        height=700, showlegend=False, template="plotly_white",
+        title_text="<b>Threshold Analysis Dashboard</b><br><sub>With Gaussian error bars</sub>"
     )
     
     return fig
 
 def fig_to_image(fig: go.Figure, format: str, width: int, height: int, scale: int) -> bytes:
-    """Convert figure to image"""
     try:
         return fig.to_image(format=format, width=width, height=height, scale=scale, engine="kaleido")
     except Exception as e:
@@ -1060,7 +1077,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.markdown('<p class="main-header">🔬 Random Laser Analyzer</p>', unsafe_allow_html=True)
-st.markdown("**Lorentzian fitting • Gaussian error analysis • Energy calibration • Complete uncertainty treatment**")
+st.markdown("**Lorentzian fitting • Gaussian error analysis • Thickness-dependent energy calibration**")
 
 if not KALEIDO_AVAILABLE:
     st.warning("⚠️ Image export disabled. Install: `pip install kaleido`")
@@ -1074,49 +1091,32 @@ with st.sidebar:
         show_fit_params = st.checkbox("Show fit parameters", False)
         apply_nd = st.checkbox("Apply OD/ND correction", True)
     
-    # NEW: Gaussian Error Correction Settings
     with st.expander("📊 Gaussian Error Correction", expanded=True):
-        st.markdown("### Energy Uncertainty Treatment")
-        
         enable_normalization = st.checkbox(
-            "Enable Intensity Normalization",
-            value=False,
-            help="Normalize intensities by pump energy to remove energy variation effects"
+            "Enable Intensity Normalization", value=False,
+            help="Normalize intensities by pump energy (I/E or I/E²)"
         )
-        
         if enable_normalization:
             normalization_mode = st.selectbox(
                 "Normalization Mode",
                 ['linear', 'quadratic'],
                 format_func=lambda x: {
-                    'linear': 'Linear (I/E) - For linear processes',
-                    'quadratic': 'Quadratic (I/E²) - For two-photon processes'
+                    'linear': 'Linear (I/E) - linear processes',
+                    'quadratic': 'Quadratic (I/E²) - nonlinear processes'
                 }[x]
             )
         else:
             normalization_mode = 'none'
         
         enable_weighted_threshold = st.checkbox(
-            "Use Gaussian-Weighted Threshold",
-            value=True,
-            help="Account for energy uncertainties in threshold determination"
+            "Use Gaussian-Weighted Threshold", value=True,
+            help="Account for energy uncertainties in threshold fitting"
         )
         
         show_error_bars = st.checkbox(
-            "Show Gaussian Error Bars",
-            value=True,
-            help="Display error bars accounting for energy distribution"
+            "Show Gaussian Error Bars", value=True,
+            help="Show Gaussian error bars on all summary plots"
         )
-        
-        st.markdown("---")
-        st.markdown("### 📈 Error Components")
-        st.info("""
-        **Total Uncertainty includes:**
-        - ✅ Spectral fitting error (Lorentzian)
-        - ✅ Energy Gaussian distribution (σ_E)
-        - ✅ OD correction uncertainty
-        - ✅ Propagated through normalization
-        """)
     
     if KALEIDO_AVAILABLE:
         with st.expander("💾 Export Settings"):
@@ -1129,53 +1129,37 @@ with st.sidebar:
     st.markdown("### 📊 Features")
     st.markdown("""
     - ✅ Lorentzian fitting
-    - ✅ **Gaussian error analysis** 🆕
+    - ✅ Gaussian error propagation
     - ✅ OD/ND correction
-    - ✅ **Uncertainty propagation** 🆕
-    - ✅ Energy calibration
-    - ✅ **Weighted threshold** 🆕
-    - ✅ Sample grouping
+    - ✅ Thickness-dependent energy calibration
+    - ✅ Threshold detection with Gaussian weighting
+    - ✅ Wavelength vs Energy with Gaussian error bars
+    - ✅ Intensity vs Energy with Gaussian error bars
     """)
 
 col1, col2 = st.columns([2, 1])
 
 with col1:
     st.subheader("📤 Spectrum Files (.asc)")
-    uploaded_files = st.file_uploader("Upload spectrum files", accept_multiple_files=True,
-                                     type=['asc'], key="spectrum_files")
+    uploaded_files = st.file_uploader(
+        "Upload spectrum files",
+        accept_multiple_files=True,
+        type=['asc'],
+        key="spectrum_files"
+    )
+    
+    # 🔴 NEW: Button to clear all uploaded spectrum files
+    if uploaded_files:
+        if st.button("🗑️ Clear all uploaded spectra", type="secondary"):
+            st.session_state["spectrum_files"] = []
+            st.experimental_rerun()
 
 with col2:
     st.subheader("⚡ Energy Calibration")
     
-    with st.expander("ℹ️ Energy Calibration Best Practices", expanded=False):
-        st.markdown("""
-        ### ⏱️ How Often to Calibrate?
-        
-        **✅ DO calibration when:**
-        - Starting new experiment
-        - After laser maintenance
-        - After alignment changes
-        - Every few months
-        
-        **✅ RE-USE calibration for:**
-        - Same day measurements
-        - Same week (usually)
-        - Same experimental campaign
-        
-        **💡 Best Practice:**
-        1. Measure full calibration once
-        2. Save to CSV/Excel
-        3. Re-use for all samples
-        4. Check one reference point daily
-        5. If within ±2-3%, still valid!
-        
-        **📁 Save your calibration!**
-        Export it from results → Use for months!
-        """)
-    
     with st.expander("📋 Paste Formats", expanded=False):
         st.markdown("""
-        ### Format 1: Simple
+        ### Format 1: Simple (no thickness)
         ```
         200  190  180  170
         0.008  0.025  0.058  0.122
@@ -1193,8 +1177,8 @@ with col2:
     energy_input = st.text_area(
         "Paste Energy Calibration Data",
         height=250,
-        placeholder="200\t190\t180\t170\n0.008\t0.025\t0.058\t0.122\n...",
-        help="Tab/comma separated. Auto-detects format!"
+        placeholder="200\t190\t180\t170\n7.48E-06\t2.28E-05\t5.24E-05\t1.19E-04\n...",
+        help="Paste from Excel; auto-detects format"
     )
     
     energy_map = {}
@@ -1207,55 +1191,42 @@ with col2:
                 thickness_keys = [k for k in energy_map.keys() if k is not None]
                 
                 if thickness_keys:
-                    st.success(f"✅ **Thickness-Dependent Calibration**")
-                    
+                    st.success("✅ Thickness-Dependent Calibration")
                     for thickness in sorted(thickness_keys):
-                        st.markdown(f"### Thickness = {thickness} mm")
-                        
+                        st.markdown(f"**Thickness = {thickness} mm**")
                         energy_df = pd.DataFrame([
                             {'QS': qs, 'Mean (mJ)': d['mean'], 'Std (mJ)': d['std'], 'N': d['n_readings']}
                             for qs, d in energy_map[thickness].items()
                         ]).sort_values('QS', ascending=False)
-                        
-                        st.dataframe(energy_df.style.format({
-                            'QS': '{:.0f}', 'Mean (mJ)': '{:.4f}', 'Std (mJ)': '{:.4f}', 'N': '{:.0f}'
-                        }), use_container_width=True)
+                        st.dataframe(energy_df, use_container_width=True)
                     
-                    # Visualization
                     fig = go.Figure()
                     colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd']
-                    
                     for idx, thickness in enumerate(sorted(thickness_keys)):
                         energy_df = pd.DataFrame([
                             {'QS': qs, 'Mean (mJ)': d['mean'], 'Std (mJ)': d['std']}
                             for qs, d in energy_map[thickness].items()
                         ]).sort_values('QS', ascending=False)
-                        
                         fig.add_trace(go.Scatter(
                             x=energy_df['QS'], y=energy_df['Mean (mJ)'],
                             error_y=dict(type='data', array=energy_df['Std (mJ)'], visible=True),
-                            mode='markers+lines', marker=dict(size=10), line=dict(width=2),
-                            name=f'{thickness} mm'
+                            mode='markers+lines', marker=dict(size=10),
+                            line=dict(width=2), name=f'{thickness} mm'
                         ))
-                    
                     fig.update_layout(
-                        title="<b>Energy Calibration Curves</b>",
+                        title="<b>Energy Calibration Curves (by Thickness)</b>",
                         xaxis_title="QS Level", yaxis_title="Pump Energy (mJ)",
-                        template="plotly_white", height=400, xaxis=dict(autorange='reversed')
+                        template="plotly_white", height=400,
+                        xaxis=dict(autorange='reversed')
                     )
-                    st.plotly_chart(fig, use_container_width=True, key="cal_plot_thick")
-                    
+                    st.plotly_chart(fig, use_container_width=True, key="cal_thick")
                 else:
-                    st.success(f"✅ **Simple Calibration**")
-                    
+                    st.success("✅ Simple Calibration")
                     energy_df = pd.DataFrame([
                         {'QS': qs, 'Mean (mJ)': d['mean'], 'Std (mJ)': d['std'], 'N': d['n_readings']}
                         for qs, d in energy_map[None].items()
                     ]).sort_values('QS', ascending=False)
-                    
-                    st.dataframe(energy_df.style.format({
-                        'QS': '{:.0f}', 'Mean (mJ)': '{:.4f}', 'Std (mJ)': '{:.4f}', 'N': '{:.0f}'
-                    }), use_container_width=True)
+                    st.dataframe(energy_df, use_container_width=True)
                     
                     fig = go.Figure()
                     fig.add_trace(go.Scatter(
@@ -1267,11 +1238,12 @@ with col2:
                     fig.update_layout(
                         title="<b>Energy Calibration Curve</b>",
                         xaxis_title="QS Level", yaxis_title="Pump Energy (mJ)",
-                        template="plotly_white", height=400, xaxis=dict(autorange='reversed')
+                        template="plotly_white", height=400,
+                        xaxis=dict(autorange='reversed')
                     )
-                    st.plotly_chart(fig, use_container_width=True, key="cal_plot_simple")
+                    st.plotly_chart(fig, use_container_width=True, key="cal_simple")
     else:
-        st.info("💡 Paste your energy calibration data above")
+        st.info("💡 Paste energy calibration data to enable energy-based analysis")
 
 # ==============================================================
 # MAIN PROCESSING
@@ -1290,9 +1262,9 @@ if uploaded_files:
     if energy_map:
         thickness_keys = [k for k in energy_map.keys() if k is not None]
         if thickness_keys:
-            st.info(f"⚡ **Thickness-dependent energy calibration active** ({len(thickness_keys)} thickness levels)")
+            st.info(f"⚡ Thickness-dependent energy calibration active ({len(thickness_keys)} thickness levels)")
         else:
-            st.info(f"⚡ **Energy calibration active** (simple mode)")
+            st.info("⚡ Energy calibration active (simple mode)")
     
     with zipfile.ZipFile(plot_zip, "w", zipfile.ZIP_DEFLATED) as html_buffer:
         img_buffer = zipfile.ZipFile(image_zip, "w", zipfile.ZIP_DEFLATED) if KALEIDO_AVAILABLE else None
@@ -1303,11 +1275,9 @@ if uploaded_files:
                 status.info(f"Processing: {filename} ({idx+1}/{len(uploaded_files)})")
                 
                 try:
-                    # Parse
                     content = file.read().decode(errors='ignore')
                     wl, counts_raw = parse_asc_file(content, skip_rows)
                     
-                    # Metadata
                     qs = extract_qs(filename)
                     thickness = extract_thickness(filename)
                     nd_value = extract_nd(filename) if apply_nd else 0.0
@@ -1317,29 +1287,25 @@ if uploaded_files:
                     sample_label = get_sample_label(thickness, concentration, dye_amount)
                     sample_label_short = get_short_label(thickness, concentration)
                     
-                    # Energy
                     if energy_map and not np.isnan(qs):
                         energy_mean, energy_std = interpolate_energy(qs, thickness, energy_map)
                     else:
                         energy_mean, energy_std = np.nan, np.nan
                     
-                    # OD correction
                     if nd_value > 0:
                         counts_corrected = apply_nd_correction(counts_raw, nd_value)
                     else:
                         counts_corrected = counts_raw.copy()
                     
-                    # Analyze spectrum (with uncertainties)
                     result = analyze_spectrum(wl, counts_corrected)
                     
-                    # NEW: Calculate Gaussian-corrected quantities
+                    # Gaussian-corrected uncertainties
                     total_peak_unc = calculate_total_uncertainty(
                         result.peak_intensity_uncertainty,
                         energy_std if not np.isnan(energy_std) else 0.0,
                         result.peak_intensity,
                         energy_mean if not np.isnan(energy_mean) else 1.0
                     )
-                    
                     total_integrated_unc = calculate_total_uncertainty(
                         result.integrated_intensity_uncertainty,
                         energy_std if not np.isnan(energy_std) else 0.0,
@@ -1347,14 +1313,12 @@ if uploaded_files:
                         energy_mean if not np.isnan(energy_mean) else 1.0
                     )
                     
-                    # Normalized values
                     peak_norm, peak_norm_unc = propagate_gaussian_error(
                         result.peak_intensity, result.peak_intensity_uncertainty,
                         energy_mean if not np.isnan(energy_mean) else 1.0,
                         energy_std if not np.isnan(energy_std) else 0.0,
                         normalization_mode
                     )
-                    
                     integrated_norm, integrated_norm_unc = propagate_gaussian_error(
                         result.integrated_intensity, result.integrated_intensity_uncertainty,
                         energy_mean if not np.isnan(energy_mean) else 1.0,
@@ -1362,7 +1326,6 @@ if uploaded_files:
                         normalization_mode
                     )
                     
-                    # Plot individual
                     if show_individual:
                         fig = create_spectrum_plot(wl, counts_raw, counts_corrected, result, 
                                                   filename, nd_value, energy_mean, energy_std)
@@ -1380,16 +1343,16 @@ if uploaded_files:
                         html = fig.to_html(full_html=False, include_plotlyjs='cdn').encode()
                         html_buffer.writestr(f"{filename.replace('.asc', '')}.html", html)
                     
-                    # Combined label
                     label = f"QS={qs:.0f}" if not np.isnan(qs) else filename
                     if thickness:
                         label += f" | {thickness}mm"
                     if not np.isnan(energy_mean):
                         label += f" ({energy_mean:.3f}mJ)"
+                    if nd_value > 0:
+                        label += f" [OD{nd_value}]"
                     
                     combined_fig.add_trace(go.Scatter(x=wl, y=counts_corrected, mode='lines', name=label))
                     
-                    # Summary with Gaussian corrections
                     energy_contrib_pct = (energy_std / energy_mean * 100) if (not np.isnan(energy_mean) and energy_mean > 0) else 0
                     rel_total_unc_pct = (total_peak_unc / result.peak_intensity * 100) if result.peak_intensity > 0 else 0
                     
@@ -1408,7 +1371,6 @@ if uploaded_files:
                         "OD Filter": nd_value,
                         "Correction Factor": 10**nd_value if nd_value > 0 else 1,
                         
-                        # Raw values
                         "Peak λ (nm)": result.peak_wavelength,
                         "Wavelength Uncertainty": result.wavelength_uncertainty,
                         "Peak Intensity": result.peak_intensity,
@@ -1418,17 +1380,14 @@ if uploaded_files:
                         "Integrated Intensity": result.integrated_intensity,
                         "Integrated Uncertainty": total_integrated_unc,
                         
-                        # Normalized values
                         "Peak Intensity (Normalized)": peak_norm,
                         "Peak Norm Uncertainty": peak_norm_unc,
                         "Integrated Intensity (Normalized)": integrated_norm,
                         "Integrated Norm Uncertainty": integrated_norm_unc,
                         
-                        # Uncertainty statistics
                         "Energy Contribution to Error (%)": energy_contrib_pct,
                         "Relative Total Uncertainty (%)": rel_total_unc_pct,
                         
-                        # Fit quality
                         "R²": result.r_squared,
                         "SNR": result.snr,
                         "Fit Success": "✅" if result.fit_success else "❌"
@@ -1441,7 +1400,6 @@ if uploaded_files:
                     continue
                 
                 progress_bar.progress((idx + 1) / len(uploaded_files))
-        
         finally:
             if img_buffer:
                 img_buffer.close()
@@ -1452,7 +1410,6 @@ if uploaded_files:
     # ==============================================================
     # RESULTS
     # ==============================================================
-    
     st.markdown("---")
     st.subheader("📊 Summary Statistics")
     
@@ -1470,49 +1427,32 @@ if uploaded_files:
     col5.metric("Energy Cal.", summary_df[summary_df["Pump Energy (mJ)"].notna()].shape[0])
     col6.metric("Conditions", summary_df['Sample Label Short'].nunique())
     
-    # ==============================================================
-    # NEW: GAUSSIAN STATISTICS SUMMARY (For Thesis)
-    # ==============================================================
+    # Gaussian statistics summary
     if not summary_df['Energy Std (mJ)'].isna().all():
         st.markdown("---")
         st.subheader("📊 Gaussian Error Analysis Summary")
         
         col1, col2, col3, col4 = st.columns(4)
-        
         avg_energy_uncertainty = summary_df['Energy Std (mJ)'].mean()
         avg_energy_rel = (summary_df['Energy Std (mJ)'] / summary_df['Pump Energy (mJ)'] * 100).mean()
         avg_total_uncertainty = summary_df['Relative Total Uncertainty (%)'].mean()
         max_energy_contrib = summary_df['Energy Contribution to Error (%)'].max()
         
-        col1.metric(
-            "Avg Energy Uncertainty", 
-            f"{avg_energy_uncertainty:.4f} mJ",
-            delta=f"{avg_energy_rel:.2f}% relative"
-        )
-        col2.metric(
-            "Avg Total Uncertainty",
-            f"{avg_total_uncertainty:.2f}%",
-            delta="Combined sources"
-        )
-        col3.metric(
-            "Max Energy Contribution",
-            f"{max_energy_contrib:.2f}%",
-            delta="To total error"
-        )
-        col4.metric(
-            "Normalization",
-            normalization_mode.capitalize(),
-            delta="Applied" if enable_normalization else "None"
-        )
+        col1.metric("Avg Energy Uncertainty", f"{avg_energy_uncertainty:.4f} mJ",
+                    delta=f"{avg_energy_rel:.2f}% relative")
+        col2.metric("Avg Total Uncertainty", f"{avg_total_uncertainty:.2f}%",
+                    delta="Combined sources")
+        col3.metric("Max Energy Contribution", f"{max_energy_contrib:.2f}%",
+                    delta="To total error")
+        col4.metric("Normalization", normalization_mode.capitalize(),
+                    delta="Applied" if enable_normalization else "None")
         
-        # Detailed uncertainty breakdown
         with st.expander("📋 Detailed Uncertainty Breakdown"):
             uncertainty_df = summary_df[[
                 'File', 'Pump Energy (mJ)', 'Energy Std (mJ)',
                 'Peak Intensity', 'Peak Intensity Uncertainty',
                 'Relative Total Uncertainty (%)'
             ]].copy()
-            
             st.dataframe(uncertainty_df.style.format({
                 'Pump Energy (mJ)': '{:.4f}',
                 'Energy Std (mJ)': '{:.4f}',
@@ -1520,29 +1460,8 @@ if uploaded_files:
                 'Peak Intensity Uncertainty': '{:.2f}',
                 'Relative Total Uncertainty (%)': '{:.2f}'
             }), use_container_width=True)
-        
-        # Thesis-ready text
-        with st.expander("📝 Copy-Paste for Thesis"):
-            st.markdown(f"""
-            ### Methods Section Text:
-            
-            > Pump energy at each Q-switch setting was characterized by measuring 10 consecutive laser shots, 
-            > yielding a mean value μ and standard deviation σ. The shot-to-shot energy fluctuations followed 
-            > a Gaussian distribution with relative uncertainty of {avg_energy_rel:.2f}% ± {summary_df['Energy Std (mJ)'].std():.2f}%. 
-            > Spectral emission intensities were {'normalized by pump energy using I_norm = I/E to account for energy variations' if enable_normalization else 'corrected for pump energy variations through Gaussian error propagation'}. 
-            > The total measurement uncertainty, combining spectral fitting errors and pump energy fluctuations, 
-            > was {avg_total_uncertainty:.2f}% ± {summary_df['Relative Total Uncertainty (%)'].std():.2f}%.
-            > All error bars represent Gaussian-propagated uncertainties accounting for both spectral and energy contributions.
-            
-            ### Statistical Summary:
-            
-            - **Average pump energy uncertainty:** σ_E = {avg_energy_uncertainty:.4f} mJ ({avg_energy_rel:.2f}%)
-            - **Total measurement uncertainty:** σ_total = {avg_total_uncertainty:.2f}%
-            - **Error propagation method:** Gaussian quadrature sum
-            - **Normalization:** {normalization_mode.upper() if enable_normalization else 'None'}
-            """)
     
-    # Combined plot
+    # Combined spectra
     st.markdown("---")
     st.subheader("🌈 Combined Spectra")
     combined_fig.update_layout(title="Spectral Evolution", xaxis_title="Wavelength (nm)",
@@ -1559,7 +1478,7 @@ if uploaded_files:
             except:
                 pass
     
-    # Data table
+    # Results table
     st.markdown("---")
     st.subheader("📋 Results Table")
     
@@ -1585,7 +1504,7 @@ if uploaded_files:
     
     st.dataframe(styled, use_container_width=True)
     
-    # Threshold with Gaussian weighting
+    # Threshold detection
     use_energy = 'Pump Energy (mJ)' in summary_df.columns and summary_df['Pump Energy (mJ)'].notna().sum() > 3
     
     if use_energy or summary_df['QS Level'].notna().sum() > 3:
@@ -1595,60 +1514,49 @@ if uploaded_files:
         if use_energy:
             valid = summary_df.dropna(subset=['Pump Energy (mJ)', 'Integrated Intensity'])
             
-            # Choose intensity column based on normalization
             intensity_col = 'Integrated Intensity (Normalized)' if enable_normalization else 'Integrated Intensity'
             uncertainty_col = 'Integrated Norm Uncertainty' if enable_normalization else 'Integrated Uncertainty'
             
             if enable_weighted_threshold and not valid['Energy Std (mJ)'].isna().all():
-                # NEW: Gaussian-weighted threshold
-                threshold_result = weighted_least_squares_threshold(
+                thr_res = weighted_least_squares_threshold(
                     valid['Pump Energy (mJ)'].values,
                     valid[intensity_col].values,
                     valid['Energy Std (mJ)'].values,
                     valid[uncertainty_col].values
                 )
-                
                 threshold_obj = ThresholdAnalysis(
-                    None, threshold_result['threshold'],
-                    threshold_result['slope_below'], threshold_result['slope_above'],
-                    threshold_result['threshold'] is not None,
-                    threshold_result['uncertainty']
+                    None, thr_res['threshold'],
+                    thr_res['slope_below'], thr_res['slope_above'],
+                    thr_res['threshold'] is not None,
+                    thr_res['uncertainty']
                 )
-                
-                st.info("✅ Using **Gaussian-weighted** threshold fitting")
-                
-                col1, col2, col3 = st.columns(3)
-                with col1:
-                    if threshold_obj.threshold_found:
-                        st.success(f"✅ Threshold: **{threshold_obj.threshold_energy:.4f} ± {threshold_obj.threshold_uncertainty:.4f} mJ**")
-                    else:
-                        st.warning("⚠️ No threshold detected")
-                with col2:
-                    st.metric("Slope Below", f"{threshold_obj.slope_below:.2e}")
-                with col3:
-                    st.metric("Slope Above", f"{threshold_obj.slope_above:.2e}")
+                st.info("✅ Gaussian-weighted threshold fitting enabled")
             else:
-                # Original threshold
-                threshold_obj = detect_threshold(valid['Pump Energy (mJ)'].values, valid[intensity_col].values)
-                
-                col1, col2, col3 = st.columns(3)
-                with col1:
-                    if threshold_obj.threshold_found:
-                        st.success(f"✅ Threshold: **{threshold_obj.threshold_energy:.4f} mJ**")
-                    else:
-                        st.warning("⚠️ No threshold detected")
-                with col2:
-                    st.metric("Slope (below)", f"{threshold_obj.slope_below:.2e}")
-                with col3:
-                    st.metric("Slope (above)", f"{threshold_obj.slope_above:.2e}")
-        else:
-            valid = summary_df.dropna(subset=['QS Level', 'Integrated Intensity'])
-            threshold_obj = detect_threshold(valid['QS Level'].values, valid['Integrated Intensity'].values)
+                threshold_obj = detect_threshold(
+                    valid['Pump Energy (mJ)'].values,
+                    valid[intensity_col].values
+                )
             
             col1, col2, col3 = st.columns(3)
             with col1:
+                if threshold_obj.threshold_found and threshold_obj.threshold_energy is not None:
+                    if threshold_obj.threshold_uncertainty > 0:
+                        st.success(f"✅ Threshold: {threshold_obj.threshold_energy:.4f} ± {threshold_obj.threshold_uncertainty:.4f} mJ")
+                    else:
+                        st.success(f"✅ Threshold: {threshold_obj.threshold_energy:.4f} mJ")
+                else:
+                    st.warning("⚠️ No threshold detected")
+            with col2:
+                st.metric("Slope (below)", f"{threshold_obj.slope_below:.2e}")
+            with col3:
+                st.metric("Slope (above)", f"{threshold_obj.slope_above:.2e}")
+        else:
+            valid = summary_df.dropna(subset=['QS Level', 'Integrated Intensity'])
+            threshold_obj = detect_threshold(valid['QS Level'].values, valid['Integrated Intensity'].values)
+            col1, col2, col3 = st.columns(3)
+            with col1:
                 if threshold_obj.threshold_found:
-                    st.success(f"✅ Threshold: QS **{threshold_obj.threshold_qs:.1f}**")
+                    st.success(f"✅ Threshold: QS {threshold_obj.threshold_qs:.1f}")
                 else:
                     st.warning("⚠️ No threshold detected")
             with col2:
@@ -1658,59 +1566,22 @@ if uploaded_files:
         
         threshold_fig = create_threshold_plot(summary_df, threshold_obj, use_energy, show_error_bars)
         st.plotly_chart(threshold_fig, use_container_width=True, key="threshold_plot")
-        
-        if KALEIDO_AVAILABLE:
-            col1, col2, col3 = st.columns([2, 1, 2])
-            with col2:
-                try:
-                    img = fig_to_image(threshold_fig, image_format, int(image_width*1.5), 
-                                      int(image_height*1.2), image_scale)
-                    st.download_button(f"📥 Threshold ({image_format.upper()})", img,
-                                      f"threshold.{image_format}", f"image/{image_format}")
-                except:
-                    pass
     
-    # Energy vs Wavelength plot with error bars
+    # Energy vs Wavelength
     if 'Pump Energy (mJ)' in summary_df.columns and summary_df['Pump Energy (mJ)'].notna().sum() > 2:
         st.markdown("---")
-        st.subheader("📈 Peak Wavelength Evolution")
-        
+        st.subheader("📈 Peak Wavelength vs Pump Energy (with Gaussian errors)")
         energy_wl_fig = create_energy_wavelength_plot(summary_df, show_error_bars)
-        
         if energy_wl_fig:
             st.plotly_chart(energy_wl_fig, use_container_width=True, key="energy_wl")
-            
-            if KALEIDO_AVAILABLE:
-                col1, col2, col3 = st.columns([2, 1, 2])
-                with col2:
-                    try:
-                        img = fig_to_image(energy_wl_fig, image_format, image_width, image_height, image_scale)
-                        st.download_button(f"📥 Energy-λ ({image_format.upper()})", img,
-                                          f"energy_wavelength.{image_format}", f"image/{image_format}",
-                                          key="dl_e_wl")
-                    except:
-                        pass
     
-    # Energy vs Intensity plot with error bars
+    # Energy vs Intensity
     if 'Pump Energy (mJ)' in summary_df.columns and summary_df['Pump Energy (mJ)'].notna().sum() > 2:
         st.markdown("---")
-        st.subheader("💡 Peak Intensity Evolution")
-        
+        st.subheader("💡 Peak Intensity vs Pump Energy (with Gaussian errors)")
         energy_int_fig = create_energy_intensity_plot(summary_df, show_error_bars)
-        
         if energy_int_fig:
             st.plotly_chart(energy_int_fig, use_container_width=True, key="energy_int")
-            
-            if KALEIDO_AVAILABLE:
-                col1, col2, col3 = st.columns([2, 1, 2])
-                with col2:
-                    try:
-                        img = fig_to_image(energy_int_fig, image_format, image_width, image_height, image_scale)
-                        st.download_button(f"📥 Energy-Intensity ({image_format.upper()})", img,
-                                          f"energy_intensity.{image_format}", f"image/{image_format}",
-                                          key="dl_e_int")
-                    except:
-                        pass
     
     # Downloads
     st.markdown("---")
@@ -1720,13 +1591,14 @@ if uploaded_files:
     
     with cols[0]:
         csv = summary_df.to_csv(index=False).encode()
-        st.download_button("📥 CSV", csv, f"results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                          "text/csv", use_container_width=True)
+        st.download_button("📥 CSV", csv,
+            f"results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+            "text/csv", use_container_width=True)
     
     with cols[1]:
-        st.download_button("📦 HTML", plot_zip.getvalue(),
-                          f"plots_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip",
-                          "application/zip", use_container_width=True)
+        st.download_button("📦 HTML Plots", plot_zip.getvalue(),
+            f"plots_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip",
+            "application/zip", use_container_width=True)
     
     with cols[2]:
         excel_buffer = BytesIO()
@@ -1738,88 +1610,35 @@ if uploaded_files:
                     for qs, d in energy_map[thickness_key].items():
                         cal_data.append({
                             'Thickness': thickness_key if thickness_key is not None else 'N/A',
-                            'QS': qs, 'Mean (mJ)': d['mean'], 'Std (mJ)': d['std'], 'N': d['n_readings']
+                            'QS': qs, 'Mean (mJ)': d['mean'],
+                            'Std (mJ)': d['std'], 'N': d['n_readings']
                         })
                 energy_cal_df = pd.DataFrame(cal_data).sort_values(['Thickness', 'QS'])
                 energy_cal_df.to_excel(writer, sheet_name='Energy Cal', index=False)
-        
         st.download_button("📊 Excel", excel_buffer.getvalue(),
-                          f"results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
-                          "application/vnd.ms-excel", use_container_width=True)
+            f"results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+            "application/vnd.ms-excel", use_container_width=True)
     
     if KALEIDO_AVAILABLE and image_zip:
         with cols[3]:
-            st.download_button(f"🖼️ Images", image_zip.getvalue(),
-                              f"images_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip",
-                              "application/zip", use_container_width=True)
+            st.download_button("🖼️ Images ZIP", image_zip.getvalue(),
+                f"images_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip",
+                "application/zip", use_container_width=True)
 
 else:
     st.info("👆 Upload .asc files to begin")
-    
     with st.expander("📖 Instructions"):
         st.markdown("""
-        ### Quick Start
-        1. **Upload .asc spectrum files** (left)
-        2. **Paste energy calibration** (right, optional)
-        3. **Configure Gaussian correction** (sidebar)
-        4. View automated analysis with error bars
-        5. Download results + thesis text
-        
-        ### 📊 NEW: Gaussian Error Correction
-        
-        This version includes **proper statistical treatment** of energy fluctuations:
-        
-        ✅ **Gaussian error propagation** for all quantities  
-        ✅ **Intensity normalization** (I/E or I/E²)  
-        ✅ **Weighted threshold fitting** with energy uncertainties  
-        ✅ **Comprehensive error bars** on all plots  
-        ✅ **Thesis-ready text** with statistical summary  
-        
-        ### ⚡ Energy Calibration Best Practice
-        
-        **You DON'T need to calibrate every time!**
-        
-        ✅ Calibrate once → Save Excel → Use for months  
-        ✅ Re-use same calibration for entire campaign  
-        ✅ Only re-calibrate after laser maintenance  
-        
-        **Save your calibration:**  
-        After analysis → Download Excel → Keep "Energy Cal" sheet → Use next time!
-        
-        ### 📝 Filename Format
-        `UL_5mm_QS_110_10rep_17mgR6G_UL_5%IL_LL_1%IL_OD=2.asc`
-        
-        Auto-extracts:
-        - Thickness: `5mm`
-        - QS: `110`
-        - Concentrations: `UL_5%IL`, `LL_1%IL`
-        - Dye: `17mg`
-        - OD filter: `2`
-        
-        ### 📈 Generated Plots
-        - Individual spectra with Lorentzian fits
-        - Combined spectra overlay
-        - Threshold dashboard (4 panels) **with error bars**
-        - Energy vs Wavelength **with Gaussian errors**
-        - Energy vs Intensity **with Gaussian errors**
-        
-        ### 📊 For Your Thesis
-        
-        The **"Gaussian Error Analysis Summary"** section provides:
-        - Statistical summary of uncertainties
-        - Copy-paste methods text
-        - Proper error reporting
-        
-        All plots show **Gaussian-propagated error bars** combining:
-        - Spectral fitting uncertainty
-        - Energy distribution (σ_E)
-        - Normalized intensity errors
+        - Upload your `.asc` spectra on the left.
+        - Paste your energy calibration on the right.
+        - Configure Gaussian correction and normalization in the sidebar.
+        - All peak wavelength vs pump energy plots now include **Gaussian error bars on wavelength** (from Lorentzian fit) **and on energy** (from calibration).
+        - Use the **Clear all uploaded spectra** button to reset the spectra list at any time.
         """)
 
 st.markdown("---")
 st.markdown("""
 <div style='text-align: center; color: #666;'>
-📧 varun.solanki@fau.de | Friedrich-Alexander-Universität Erlangen-Nürnberg<br>
-<b>Version 2.0 - Gaussian Error Analysis</b>
+📧 varun.solanki@fau.de | FAU Erlangen-Nürnberg
 </div>
 """, unsafe_allow_html=True)
