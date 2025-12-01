@@ -1,6 +1,12 @@
+# Complete Code with Vertical-Only Error Bars
+
+Here's the complete updated code with all horizontal error bars removed:
+
+```python
 # ==============================================================
 # Streamlit App: Random Laser ASC Analyzer
 # WITH GAUSSIAN ERROR CORRECTION & THICKNESS-DEPENDENT ENERGY
+# VERTICAL ERROR BARS ONLY (Standard Convention)
 # ==============================================================
 import streamlit as st
 import pandas as pd
@@ -205,18 +211,6 @@ def apply_nd_correction(counts: np.ndarray, nd_value: float) -> np.ndarray:
 def parse_pasted_energy_data(pasted_text: str) -> Dict:
     """
     Parse pasted energy calibration data with optional thickness support
-    
-    Format 1 (Simple - no thickness):
-    200  190  180  170
-    0.008  0.025  0.058  0.122
-    ...
-    
-    Format 2 (With thickness in first column):
-    Thickness  200  190  180  170
-    3          0.008  0.025  0.058  0.122
-    5          0.010  0.030  0.070  0.150
-    7          0.012  0.035  0.082  0.178
-    ...
     """
     energy_map = {}
     has_thickness = False
@@ -225,10 +219,9 @@ def parse_pasted_energy_data(pasted_text: str) -> Dict:
         lines = [line.strip() for line in pasted_text.strip().split('\n') if line.strip()]
         
         if len(lines) < 2:
-            st.error("❌ Need at least 2 rows (header + measurements)")
+            st.error("Need at least 2 rows (header + measurements)")
             return {}
         
-        # Parse first line
         first_line = lines[0]
         qs_values = None
         
@@ -238,15 +231,15 @@ def parse_pasted_energy_data(pasted_text: str) -> Dict:
                 if parts[0].lower() in ['thickness', 't', 'thick']:
                     has_thickness = True
                     qs_values = [float(x) for x in parts[1:]]
-                    st.success("✅ Detected THICKNESS-DEPENDENT format")
-                    st.info(f"✅ QS levels: {qs_values}")
+                    st.success("Detected THICKNESS-DEPENDENT format")
+                    st.info(f"QS levels: {qs_values}")
                 else:
                     try:
                         qs_values = [float(x) for x in parts]
                         if all(100 <= x <= 500 for x in qs_values):
                             has_thickness = False
-                            st.success("✅ Detected SIMPLE format (no thickness)")
-                            st.info(f"✅ QS levels: {qs_values}")
+                            st.success("Detected SIMPLE format (no thickness)")
+                            st.info(f"QS levels: {qs_values}")
                         else:
                             continue
                     except:
@@ -254,7 +247,7 @@ def parse_pasted_energy_data(pasted_text: str) -> Dict:
                 break
         
         if not qs_values:
-            st.error("❌ Could not parse QS levels from first row")
+            st.error("Could not parse QS levels from first row")
             return {}
         
         if has_thickness:
@@ -291,7 +284,7 @@ def parse_pasted_energy_data(pasted_text: str) -> Dict:
                             'od': 0.0
                         }
             
-            st.success(f"✅ Parsed {len(energy_map)} thickness levels with {len(qs_values)} QS levels each")
+            st.success(f"Parsed {len(energy_map)} thickness levels with {len(qs_values)} QS levels each")
         else:
             temp_map = {qs: [] for qs in qs_values}
             data_rows = lines[1:]
@@ -321,12 +314,12 @@ def parse_pasted_energy_data(pasted_text: str) -> Dict:
                         'od': 0.0
                     }
             
-            st.success(f"✅ Parsed {len(energy_map[None])} QS levels")
+            st.success(f"Parsed {len(energy_map[None])} QS levels")
         
         return energy_map
         
     except Exception as e:
-        st.error(f"❌ Error parsing data: {str(e)}")
+        st.error(f"Error parsing data: {str(e)}")
         import traceback
         st.code(traceback.format_exc())
         return {}
@@ -418,26 +411,21 @@ def interpolate_energy(qs_value: float, thickness_value: Optional[float],
 def propagate_gaussian_error(intensity: float, intensity_std: float, 
                             energy: float, energy_std: float,
                             normalization_mode: str = 'none') -> Tuple[float, float]:
-    """
-    Propagate Gaussian uncertainties through normalization
-    
-    For I_norm = I / E^n:
-    σ(I_norm) = I_norm × √[(σ_I/I)² + (n×σ_E/E)²]
-    """
+    """Propagate Gaussian uncertainties through normalization"""
     if normalization_mode == 'none':
         return intensity, intensity_std
     
     if energy == 0 or np.isnan(energy):
         return np.nan, np.nan
     
-    if normalization_mode == 'linear':  # I/E
+    if normalization_mode == 'linear':
         I_norm = intensity / energy
         rel_I = intensity_std / intensity if intensity != 0 else 0
         rel_E = energy_std / energy if energy != 0 else 0
         sigma_norm = I_norm * np.sqrt(rel_I**2 + rel_E**2)
         return I_norm, sigma_norm
     
-    if normalization_mode == 'quadratic':  # I/E²
+    if normalization_mode == 'quadratic':
         I_norm = intensity / (energy ** 2)
         rel_I = intensity_std / intensity if intensity != 0 else 0
         rel_E = energy_std / energy if energy != 0 else 0
@@ -462,10 +450,7 @@ def weighted_least_squares_threshold(energies: np.ndarray,
                                      intensities: np.ndarray,
                                      energy_uncertainties: np.ndarray,
                                      intensity_uncertainties: np.ndarray) -> Dict:
-    """
-    Gaussian-weighted threshold fit:
-    Weights include both intensity and energy uncertainties
-    """
+    """Gaussian-weighted threshold fit"""
     total_uncertainties = np.sqrt(
         intensity_uncertainties**2 + 
         (intensities * energy_uncertainties / (energies + 1e-10))**2
@@ -628,7 +613,7 @@ def analyze_spectrum(wl: np.ndarray, counts: np.ndarray) -> FitResult:
         )
 
 # ==============================================================
-# THRESHOLD DETECTION (BASIC)
+# THRESHOLD DETECTION
 # ==============================================================
 def detect_threshold(x_values: np.ndarray, intensities: np.ndarray, min_points: int = 3) -> ThresholdAnalysis:
     if len(x_values) < 2 * min_points:
@@ -675,7 +660,7 @@ def parse_asc_file(file_content: str, skip_rows: int) -> Tuple[np.ndarray, np.nd
     return wl, counts
 
 # ==============================================================
-# VISUALIZATION FUNCTIONS
+# VISUALIZATION FUNCTIONS (VERTICAL ERROR BARS ONLY)
 # ==============================================================
 def create_spectrum_plot(wl: np.ndarray, counts_raw: np.ndarray, counts_corrected: np.ndarray,
                         fit_result: FitResult, filename: str, nd_value: float, 
@@ -729,13 +714,13 @@ def create_spectrum_plot(wl: np.ndarray, counts_raw: np.ndarray, counts_correcte
     return fig
 
 def create_energy_wavelength_plot(df: pd.DataFrame, show_error_bars: bool = True) -> go.Figure:
-    """Energy vs Peak Wavelength with Gaussian error bars for wavelength and energy."""
+    """Energy vs Peak Wavelength with VERTICAL error bars only."""
     from scipy.interpolate import make_interp_spline
     
     fig = go.Figure()
     
     if 'Pump Energy (mJ)' not in df.columns or df['Pump Energy (mJ)'].isna().all():
-        st.warning("⚠️ Energy calibration data not available")
+        st.warning("Energy calibration data not available")
         return None
     
     if 'Sample Label Short' in df.columns:
@@ -770,23 +755,21 @@ def create_energy_wavelength_plot(df: pd.DataFrame, show_error_bars: bool = True
                 except:
                     pass
             
-            # Gaussian error bars for wavelength (σ_λ) and energy (σ_E)
-            error_x = group_df['Energy Std (mJ)'].values if 'Energy Std (mJ)' in group_df.columns else None
+            # ONLY VERTICAL error bars (wavelength uncertainty)
             error_y = group_df['Wavelength Uncertainty'].values if 'Wavelength Uncertainty' in group_df.columns else None
             
             fig.add_trace(go.Scatter(
                 x=x_data, y=y_data, mode='markers',
                 marker=dict(size=12, color=color, symbol='circle', line=dict(width=2, color='white')),
                 name=label, showlegend=False, legendgroup=label,
-                error_x=dict(
-                    type='data', array=error_x,
-                    visible=show_error_bars and error_x is not None,
-                    thickness=1.5, width=4
-                ),
+                # VERTICAL ERROR BARS ONLY
                 error_y=dict(
-                    type='data', array=error_y,
+                    type='data', 
+                    array=error_y,
                     visible=show_error_bars and error_y is not None,
-                    thickness=1.5, width=4
+                    thickness=2, 
+                    width=6,
+                    color=color
                 ),
                 hovertemplate=(
                     f'<b>{label}</b><br>'
@@ -797,7 +780,7 @@ def create_energy_wavelength_plot(df: pd.DataFrame, show_error_bars: bool = True
             ))
     
     fig.update_layout(
-        title="<b>Peak Wavelength vs Pump Energy</b><br><sub>With Gaussian error bars for wavelength and energy</sub>",
+        title="<b>Peak Wavelength vs Pump Energy</b><br><sub>Vertical error bars: wavelength uncertainty (±σ<sub>λ</sub>)</sub>",
         xaxis_title="Pump Energy (mJ)", yaxis_title="Peak Wavelength (nm)",
         template="plotly_white", hovermode="closest", height=600, showlegend=True,
         legend=dict(title="Sample Conditions", x=1.02, y=1,
@@ -807,13 +790,13 @@ def create_energy_wavelength_plot(df: pd.DataFrame, show_error_bars: bool = True
     return fig
 
 def create_energy_intensity_plot(df: pd.DataFrame, show_error_bars: bool = True) -> go.Figure:
-    """Energy vs Peak Intensity with Gaussian error bars."""
+    """Energy vs Peak Intensity with VERTICAL error bars only."""
     from scipy.interpolate import make_interp_spline
     
     fig = go.Figure()
     
     if 'Pump Energy (mJ)' not in df.columns or df['Pump Energy (mJ)'].isna().all():
-        st.warning("⚠️ Energy calibration data not available")
+        st.warning("Energy calibration data not available")
         return None
     
     if 'Sample Label Short' in df.columns:
@@ -848,23 +831,21 @@ def create_energy_intensity_plot(df: pd.DataFrame, show_error_bars: bool = True)
                 except:
                     pass
             
-            # Gaussian error bars
-            error_x = group_df['Energy Std (mJ)'].values if 'Energy Std (mJ)' in group_df.columns else None
+            # ONLY VERTICAL error bars (intensity uncertainty)
             error_y = group_df['Peak Intensity Uncertainty'].values if 'Peak Intensity Uncertainty' in group_df.columns else None
             
             fig.add_trace(go.Scatter(
                 x=x_data, y=y_data, mode='markers',
                 marker=dict(size=12, color=color, symbol='circle', line=dict(width=2, color='white')),
                 name=label, showlegend=False, legendgroup=label,
-                error_x=dict(
-                    type='data', array=error_x,
-                    visible=show_error_bars and error_x is not None,
-                    thickness=1.5, width=4
-                ),
+                # VERTICAL ERROR BARS ONLY
                 error_y=dict(
-                    type='data', array=error_y,
+                    type='data', 
+                    array=error_y,
                     visible=show_error_bars and error_y is not None,
-                    thickness=1.5, width=4
+                    thickness=2, 
+                    width=6,
+                    color=color
                 ),
                 hovertemplate=(
                     f'<b>{label}</b><br>'
@@ -875,7 +856,7 @@ def create_energy_intensity_plot(df: pd.DataFrame, show_error_bars: bool = True)
             ))
     
     fig.update_layout(
-        title="<b>Peak Intensity vs Pump Energy</b><br><sub>With Gaussian error bars</sub>",
+        title="<b>Peak Intensity vs Pump Energy</b><br><sub>Vertical error bars: intensity uncertainty (±σ<sub>I</sub>)</sub>",
         xaxis_title="Pump Energy (mJ)", yaxis_title="Peak Intensity (counts)",
         template="plotly_white", hovermode="closest", height=600, showlegend=True,
         legend=dict(title="Sample Conditions", x=1.02, y=1,
@@ -886,7 +867,7 @@ def create_energy_intensity_plot(df: pd.DataFrame, show_error_bars: bool = True)
 
 def create_threshold_plot(df: pd.DataFrame, threshold: ThresholdAnalysis, use_energy: bool = True, 
                           show_error_bars: bool = True) -> go.Figure:
-    """Threshold dashboard with Gaussian error bars."""
+    """Threshold dashboard with VERTICAL error bars only."""
     from scipy.interpolate import make_interp_spline
     
     x_col = 'Pump Energy (mJ)' if use_energy and 'Pump Energy (mJ)' in df.columns else 'QS Level'
@@ -935,8 +916,7 @@ def create_threshold_plot(df: pd.DataFrame, threshold: ThresholdAnalysis, use_en
         except:
             return x, y
     
-    # Common error arrays
-    error_x_array = valid['Energy Std (mJ)'].values[sort_idx] if 'Energy Std (mJ)' in valid.columns else None
+    # ONLY VERTICAL error arrays
     error_int_array = valid['Integrated Uncertainty'].values[sort_idx] if 'Integrated Uncertainty' in valid.columns else None
     error_fwhm_array = valid['FWHM Uncertainty'].values[sort_idx] if 'FWHM Uncertainty' in valid.columns else None
     error_wl_array = valid['Wavelength Uncertainty'].values[sort_idx] if 'Wavelength Uncertainty' in valid.columns else None
@@ -951,15 +931,10 @@ def create_threshold_plot(df: pd.DataFrame, threshold: ThresholdAnalysis, use_en
     fig.add_trace(go.Scatter(
         x=x_sorted, y=y_int, mode='markers',
         marker=dict(size=10, color='red', line=dict(width=2, color='white')),
-        error_x=dict(
-            type='data', array=error_x_array,
-            visible=show_error_bars and error_x_array is not None,
-            thickness=1.5, width=4, color='rgba(255,0,0,0.3)'
-        ),
         error_y=dict(
             type='data', array=error_int_array,
             visible=show_error_bars and error_int_array is not None,
-            thickness=1.5, width=4, color='rgba(255,0,0,0.3)'
+            thickness=2, width=5, color='rgba(255,0,0,0.6)'
         ),
         showlegend=False
     ), row=1, col=1)
@@ -979,15 +954,10 @@ def create_threshold_plot(df: pd.DataFrame, threshold: ThresholdAnalysis, use_en
     fig.add_trace(go.Scatter(
         x=x_sorted, y=y_fwhm, mode='markers',
         marker=dict(size=10, color='blue', line=dict(width=2, color='white')),
-        error_x=dict(
-            type='data', array=error_x_array,
-            visible=show_error_bars and error_x_array is not None,
-            thickness=1.5, width=4, color='rgba(0,0,255,0.3)'
-        ),
         error_y=dict(
             type='data', array=error_fwhm_array,
             visible=show_error_bars and error_fwhm_array is not None,
-            thickness=1.5, width=4, color='rgba(0,0,255,0.3)'
+            thickness=2, width=5, color='rgba(0,0,255,0.6)'
         ),
         showlegend=False
     ), row=1, col=2)
@@ -1001,15 +971,10 @@ def create_threshold_plot(df: pd.DataFrame, threshold: ThresholdAnalysis, use_en
     fig.add_trace(go.Scatter(
         x=x_sorted, y=y_wl, mode='markers',
         marker=dict(size=10, color='purple', line=dict(width=2, color='white')),
-        error_x=dict(
-            type='data', array=error_x_array,
-            visible=show_error_bars and error_x_array is not None,
-            thickness=1.5, width=4, color='rgba(128,0,128,0.3)'
-        ),
         error_y=dict(
             type='data', array=error_wl_array,
             visible=show_error_bars and error_wl_array is not None,
-            thickness=1.5, width=4, color='rgba(128,0,128,0.3)'
+            thickness=2, width=5, color='rgba(128,0,128,0.6)'
         ),
         showlegend=False
     ), row=2, col=1)
@@ -1023,15 +988,10 @@ def create_threshold_plot(df: pd.DataFrame, threshold: ThresholdAnalysis, use_en
     fig.add_trace(go.Scatter(
         x=x_sorted, y=y_peak, mode='markers',
         marker=dict(size=10, color='orange', line=dict(width=2, color='white')),
-        error_x=dict(
-            type='data', array=error_x_array,
-            visible=show_error_bars and error_x_array is not None,
-            thickness=1.5, width=4, color='rgba(255,165,0,0.3)'
-        ),
         error_y=dict(
             type='data', array=error_peak_array,
             visible=show_error_bars and error_peak_array is not None,
-            thickness=1.5, width=4, color='rgba(255,165,0,0.3)'
+            thickness=2, width=5, color='rgba(255,165,0,0.6)'
         ),
         showlegend=False
     ), row=2, col=2)
@@ -1047,7 +1007,7 @@ def create_threshold_plot(df: pd.DataFrame, threshold: ThresholdAnalysis, use_en
     
     fig.update_layout(
         height=700, showlegend=False, template="plotly_white",
-        title_text="<b>Threshold Analysis Dashboard</b><br><sub>With Gaussian error bars</sub>"
+        title_text="<b>Threshold Analysis Dashboard</b><br><sub>Vertical error bars show measurement uncertainty</sub>"
     )
     
     return fig
@@ -1077,10 +1037,10 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.markdown('<p class="main-header">🔬 Random Laser Analyzer</p>', unsafe_allow_html=True)
-st.markdown("**Lorentzian fitting • Gaussian error analysis • Thickness-dependent energy calibration**")
+st.markdown("**Lorentzian fitting • Gaussian error analysis • Vertical error bars**")
 
 if not KALEIDO_AVAILABLE:
-    st.warning("⚠️ Image export disabled. Install: `pip install kaleido`")
+    st.warning("Image export disabled. Install: `pip install kaleido`")
 
 with st.sidebar:
     st.header("⚙️ Configuration")
@@ -1114,8 +1074,8 @@ with st.sidebar:
         )
         
         show_error_bars = st.checkbox(
-            "Show Gaussian Error Bars", value=True,
-            help="Show Gaussian error bars on all summary plots"
+            "Show Vertical Error Bars", value=True,
+            help="Show vertical error bars on all summary plots"
         )
     
     if KALEIDO_AVAILABLE:
@@ -1132,27 +1092,34 @@ with st.sidebar:
     - ✅ Gaussian error propagation
     - ✅ OD/ND correction
     - ✅ Thickness-dependent energy calibration
-    - ✅ Threshold detection with Gaussian weighting
-    - ✅ Wavelength vs Energy with Gaussian error bars
-    - ✅ Intensity vs Energy with Gaussian error bars
+    - ✅ Threshold detection
+    - ✅ **Vertical error bars only**
     """)
 
 col1, col2 = st.columns([2, 1])
 
 with col1:
     st.subheader("📤 Spectrum Files (.asc)")
+    
+    # Clear button functionality
+    if "uploader_key" not in st.session_state:
+        st.session_state.uploader_key = 0
+    
     uploaded_files = st.file_uploader(
         "Upload spectrum files",
         accept_multiple_files=True,
         type=['asc'],
-        key="spectrum_files"
+        key=f"spectrum_files_{st.session_state.uploader_key}"
     )
     
-    # 🔴 NEW: Button to clear all uploaded spectrum files
     if uploaded_files:
-        if st.button("🗑️ Clear all uploaded spectra", type="secondary"):
-            st.session_state["spectrum_files"] = []
-            st.experimental_rerun()
+        col_info, col_clear = st.columns([3, 1])
+        with col_info:
+            st.info(f"📁 {len(uploaded_files)} file(s) loaded")
+        with col_clear:
+            if st.button("🗑️ Clear all", type="secondary", use_container_width=True):
+                st.session_state.uploader_key += 1
+                st.rerun()
 
 with col2:
     st.subheader("⚡ Energy Calibration")
@@ -1191,7 +1158,7 @@ with col2:
                 thickness_keys = [k for k in energy_map.keys() if k is not None]
                 
                 if thickness_keys:
-                    st.success("✅ Thickness-Dependent Calibration")
+                    st.success("Thickness-Dependent Calibration")
                     for thickness in sorted(thickness_keys):
                         st.markdown(f"**Thickness = {thickness} mm**")
                         energy_df = pd.DataFrame([
@@ -1221,7 +1188,7 @@ with col2:
                     )
                     st.plotly_chart(fig, use_container_width=True, key="cal_thick")
                 else:
-                    st.success("✅ Simple Calibration")
+                    st.success("Simple Calibration")
                     energy_df = pd.DataFrame([
                         {'QS': qs, 'Mean (mJ)': d['mean'], 'Std (mJ)': d['std'], 'N': d['n_readings']}
                         for qs, d in energy_map[None].items()
@@ -1427,40 +1394,6 @@ if uploaded_files:
     col5.metric("Energy Cal.", summary_df[summary_df["Pump Energy (mJ)"].notna()].shape[0])
     col6.metric("Conditions", summary_df['Sample Label Short'].nunique())
     
-    # Gaussian statistics summary
-    if not summary_df['Energy Std (mJ)'].isna().all():
-        st.markdown("---")
-        st.subheader("📊 Gaussian Error Analysis Summary")
-        
-        col1, col2, col3, col4 = st.columns(4)
-        avg_energy_uncertainty = summary_df['Energy Std (mJ)'].mean()
-        avg_energy_rel = (summary_df['Energy Std (mJ)'] / summary_df['Pump Energy (mJ)'] * 100).mean()
-        avg_total_uncertainty = summary_df['Relative Total Uncertainty (%)'].mean()
-        max_energy_contrib = summary_df['Energy Contribution to Error (%)'].max()
-        
-        col1.metric("Avg Energy Uncertainty", f"{avg_energy_uncertainty:.4f} mJ",
-                    delta=f"{avg_energy_rel:.2f}% relative")
-        col2.metric("Avg Total Uncertainty", f"{avg_total_uncertainty:.2f}%",
-                    delta="Combined sources")
-        col3.metric("Max Energy Contribution", f"{max_energy_contrib:.2f}%",
-                    delta="To total error")
-        col4.metric("Normalization", normalization_mode.capitalize(),
-                    delta="Applied" if enable_normalization else "None")
-        
-        with st.expander("📋 Detailed Uncertainty Breakdown"):
-            uncertainty_df = summary_df[[
-                'File', 'Pump Energy (mJ)', 'Energy Std (mJ)',
-                'Peak Intensity', 'Peak Intensity Uncertainty',
-                'Relative Total Uncertainty (%)'
-            ]].copy()
-            st.dataframe(uncertainty_df.style.format({
-                'Pump Energy (mJ)': '{:.4f}',
-                'Energy Std (mJ)': '{:.4f}',
-                'Peak Intensity': '{:.0f}',
-                'Peak Intensity Uncertainty': '{:.2f}',
-                'Relative Total Uncertainty (%)': '{:.2f}'
-            }), use_container_width=True)
-    
     # Combined spectra
     st.markdown("---")
     st.subheader("🌈 Combined Spectra")
@@ -1559,86 +1492,4 @@ if uploaded_files:
                     st.success(f"✅ Threshold: QS {threshold_obj.threshold_qs:.1f}")
                 else:
                     st.warning("⚠️ No threshold detected")
-            with col2:
-                st.metric("Slope (below)", f"{threshold_obj.slope_below:.2e}")
-            with col3:
-                st.metric("Slope (above)", f"{threshold_obj.slope_above:.2e}")
-        
-        threshold_fig = create_threshold_plot(summary_df, threshold_obj, use_energy, show_error_bars)
-        st.plotly_chart(threshold_fig, use_container_width=True, key="threshold_plot")
-    
-    # Energy vs Wavelength
-    if 'Pump Energy (mJ)' in summary_df.columns and summary_df['Pump Energy (mJ)'].notna().sum() > 2:
-        st.markdown("---")
-        st.subheader("📈 Peak Wavelength vs Pump Energy (with Gaussian errors)")
-        energy_wl_fig = create_energy_wavelength_plot(summary_df, show_error_bars)
-        if energy_wl_fig:
-            st.plotly_chart(energy_wl_fig, use_container_width=True, key="energy_wl")
-    
-    # Energy vs Intensity
-    if 'Pump Energy (mJ)' in summary_df.columns and summary_df['Pump Energy (mJ)'].notna().sum() > 2:
-        st.markdown("---")
-        st.subheader("💡 Peak Intensity vs Pump Energy (with Gaussian errors)")
-        energy_int_fig = create_energy_intensity_plot(summary_df, show_error_bars)
-        if energy_int_fig:
-            st.plotly_chart(energy_int_fig, use_container_width=True, key="energy_int")
-    
-    # Downloads
-    st.markdown("---")
-    st.subheader("💾 Export All Results")
-    
-    cols = st.columns(4 if KALEIDO_AVAILABLE else 3)
-    
-    with cols[0]:
-        csv = summary_df.to_csv(index=False).encode()
-        st.download_button("📥 CSV", csv,
-            f"results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-            "text/csv", use_container_width=True)
-    
-    with cols[1]:
-        st.download_button("📦 HTML Plots", plot_zip.getvalue(),
-            f"plots_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip",
-            "application/zip", use_container_width=True)
-    
-    with cols[2]:
-        excel_buffer = BytesIO()
-        with pd.ExcelWriter(excel_buffer, engine='xlsxwriter') as writer:
-            summary_df.to_excel(writer, sheet_name='Results', index=False)
-            if energy_map:
-                cal_data = []
-                for thickness_key in energy_map.keys():
-                    for qs, d in energy_map[thickness_key].items():
-                        cal_data.append({
-                            'Thickness': thickness_key if thickness_key is not None else 'N/A',
-                            'QS': qs, 'Mean (mJ)': d['mean'],
-                            'Std (mJ)': d['std'], 'N': d['n_readings']
-                        })
-                energy_cal_df = pd.DataFrame(cal_data).sort_values(['Thickness', 'QS'])
-                energy_cal_df.to_excel(writer, sheet_name='Energy Cal', index=False)
-        st.download_button("📊 Excel", excel_buffer.getvalue(),
-            f"results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
-            "application/vnd.ms-excel", use_container_width=True)
-    
-    if KALEIDO_AVAILABLE and image_zip:
-        with cols[3]:
-            st.download_button("🖼️ Images ZIP", image_zip.getvalue(),
-                f"images_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip",
-                "application/zip", use_container_width=True)
-
-else:
-    st.info("👆 Upload .asc files to begin")
-    with st.expander("📖 Instructions"):
-        st.markdown("""
-        - Upload your `.asc` spectra on the left.
-        - Paste your energy calibration on the right.
-        - Configure Gaussian correction and normalization in the sidebar.
-        - All peak wavelength vs pump energy plots now include **Gaussian error bars on wavelength** (from Lorentzian fit) **and on energy** (from calibration).
-        - Use the **Clear all uploaded spectra** button to reset the spectra list at any time.
-        """)
-
-st.markdown("---")
-st.markdown("""
-<div style='text-align: center; color: #666;'>
-📧 varun.solanki@fau.de | FAU Erlangen-Nürnberg
-</div>
-""", unsafe_allow_html=True)
+            with col
