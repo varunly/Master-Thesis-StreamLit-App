@@ -1492,7 +1492,7 @@ if uploaded_files:
                     st.success(f"✅ Threshold: QS {threshold_obj.threshold_qs:.1f}")
                 else:
                     st.warning("⚠️ No threshold detected")
-                        with col2:
+            with col2:
                 st.metric("Slope (below)", f"{threshold_obj.slope_below:.2e}")
             with col3:
                 st.metric("Slope (above)", f"{threshold_obj.slope_above:.2e}")
@@ -1663,5 +1663,6 @@ st.markdown("""
     <p><small>Vertical error bars show measurement uncertainty (±σ)</small></p>
 </div>
 """, unsafe_allow_html=True)
+
 
 
