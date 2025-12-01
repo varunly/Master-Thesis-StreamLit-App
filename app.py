@@ -1,8 +1,8 @@
 # Complete Code with Vertical-Only Error Bars
 
-Here's the complete updated code with all horizontal error bars removed:
+#Here's the complete updated code with all horizontal error bars removed:
 
-```python
+#```python
 # ==============================================================
 # Streamlit App: Random Laser ASC Analyzer
 # WITH GAUSSIAN ERROR CORRECTION & THICKNESS-DEPENDENT ENERGY
@@ -1493,3 +1493,4 @@ if uploaded_files:
                 else:
                     st.warning("⚠️ No threshold detected")
             with col
+
