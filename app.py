@@ -755,18 +755,39 @@ def create_energy_wavelength_plot(df: pd.DataFrame, show_error_bars: bool = True
                 except:
                     pass
             
-            # ONLY VERTICAL error bars (wavelength uncertainty)
-            error_y = group_df['Wavelength Uncertainty'].values if 'Wavelength Uncertainty' in group_df.columns else None
+            # ========== FIX: Handle small/missing error values ==========
+            error_y_values = None
+            if 'Wavelength Uncertainty' in group_df.columns:
+                raw_errors = group_df['Wavelength Uncertainty'].values
+                
+                # Replace NaN with 0, then ensure minimum visible error
+                raw_errors = np.nan_to_num(raw_errors, nan=0.0)
+                
+                # If errors are very small, use a minimum value for visibility
+                # Minimum 0.1 nm or 0.5% of wavelength range
+                y_range = y_data.max() - y_data.min() if len(y_data) > 1 else 1.0
+                min_error = max(0.1, y_range * 0.01)  # At least 0.1 nm or 1% of range
+                
+                # Apply minimum only if original errors are too small to see
+                error_y_values = np.where(raw_errors < min_error * 0.1, min_error, raw_errors)
+                
+                # If all zeros, set a default visible error
+                if np.all(error_y_values == 0) or np.all(np.isnan(error_y_values)):
+                    error_y_values = np.full_like(y_data, min_error)
+            else:
+                # No uncertainty column - create default errors
+                y_range = y_data.max() - y_data.min() if len(y_data) > 1 else 1.0
+                error_y_values = np.full_like(y_data, max(0.2, y_range * 0.02))
+            # ============================================================
             
             fig.add_trace(go.Scatter(
                 x=x_data, y=y_data, mode='markers',
                 marker=dict(size=12, color=color, symbol='circle', line=dict(width=2, color='white')),
                 name=label, showlegend=False, legendgroup=label,
-                # VERTICAL ERROR BARS ONLY
                 error_y=dict(
                     type='data', 
-                    array=error_y,
-                    visible=show_error_bars and error_y is not None,
+                    array=error_y_values,
+                    visible=show_error_bars,
                     thickness=2, 
                     width=6,
                     color=color
@@ -1663,6 +1684,7 @@ st.markdown("""
     <p><small>Vertical error bars show measurement uncertainty (±σ)</small></p>
 </div>
 """, unsafe_allow_html=True)
+
 
 
 
