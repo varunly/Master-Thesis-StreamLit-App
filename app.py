@@ -1492,5 +1492,176 @@ if uploaded_files:
                     st.success(f"✅ Threshold: QS {threshold_obj.threshold_qs:.1f}")
                 else:
                     st.warning("⚠️ No threshold detected")
-            with col
+                        with col2:
+                st.metric("Slope (below)", f"{threshold_obj.slope_below:.2e}")
+            with col3:
+                st.metric("Slope (above)", f"{threshold_obj.slope_above:.2e}")
+        
+        threshold_fig = create_threshold_plot(summary_df, threshold_obj, use_energy, show_error_bars)
+        st.plotly_chart(threshold_fig, use_container_width=True, key="threshold_plot")
+    
+    # Energy vs Wavelength
+    if 'Pump Energy (mJ)' in summary_df.columns and summary_df['Pump Energy (mJ)'].notna().sum() > 2:
+        st.markdown("---")
+        st.subheader("📈 Peak Wavelength vs Pump Energy")
+        energy_wl_fig = create_energy_wavelength_plot(summary_df, show_error_bars)
+        if energy_wl_fig:
+            st.plotly_chart(energy_wl_fig, use_container_width=True, key="energy_wl")
+            
+            if KALEIDO_AVAILABLE:
+                col1, col2, col3 = st.columns([2, 1, 2])
+                with col2:
+                    try:
+                        img = fig_to_image(energy_wl_fig, image_format, image_width, image_height, image_scale)
+                        st.download_button(f"📥 Wavelength Plot ({image_format.upper()})", img,
+                                          f"wavelength_vs_energy.{image_format}", f"image/{image_format}")
+                    except:
+                        pass
+    
+    # Energy vs Intensity
+    if 'Pump Energy (mJ)' in summary_df.columns and summary_df['Pump Energy (mJ)'].notna().sum() > 2:
+        st.markdown("---")
+        st.subheader("💡 Peak Intensity vs Pump Energy")
+        energy_int_fig = create_energy_intensity_plot(summary_df, show_error_bars)
+        if energy_int_fig:
+            st.plotly_chart(energy_int_fig, use_container_width=True, key="energy_int")
+            
+            if KALEIDO_AVAILABLE:
+                col1, col2, col3 = st.columns([2, 1, 2])
+                with col2:
+                    try:
+                        img = fig_to_image(energy_int_fig, image_format, image_width, image_height, image_scale)
+                        st.download_button(f"📥 Intensity Plot ({image_format.upper()})", img,
+                                          f"intensity_vs_energy.{image_format}", f"image/{image_format}")
+                    except:
+                        pass
+    
+    # Downloads
+    st.markdown("---")
+    st.subheader("💾 Export All Results")
+    
+    cols = st.columns(4 if KALEIDO_AVAILABLE else 3)
+    
+    with cols[0]:
+        csv = summary_df.to_csv(index=False).encode()
+        st.download_button("📥 CSV", csv,
+            f"results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+            "text/csv", use_container_width=True)
+    
+    with cols[1]:
+        st.download_button("📦 HTML Plots", plot_zip.getvalue(),
+            f"plots_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip",
+            "application/zip", use_container_width=True)
+    
+    with cols[2]:
+        excel_buffer = BytesIO()
+        with pd.ExcelWriter(excel_buffer, engine='xlsxwriter') as writer:
+            summary_df.to_excel(writer, sheet_name='Results', index=False)
+            if energy_map:
+                cal_data = []
+                for thickness_key in energy_map.keys():
+                    for qs, d in energy_map[thickness_key].items():
+                        cal_data.append({
+                            'Thickness': thickness_key if thickness_key is not None else 'N/A',
+                            'QS': qs, 'Mean (mJ)': d['mean'],
+                            'Std (mJ)': d['std'], 'N': d['n_readings']
+                        })
+                energy_cal_df = pd.DataFrame(cal_data).sort_values(['Thickness', 'QS'])
+                energy_cal_df.to_excel(writer, sheet_name='Energy Cal', index=False)
+        st.download_button("📊 Excel", excel_buffer.getvalue(),
+            f"results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+            "application/vnd.ms-excel", use_container_width=True)
+    
+    if KALEIDO_AVAILABLE and image_zip:
+        with cols[3]:
+            st.download_button("🖼️ Images ZIP", image_zip.getvalue(),
+                f"images_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip",
+                "application/zip", use_container_width=True)
+
+else:
+    st.info("👆 Upload .asc files to begin")
+    with st.expander("📖 Instructions"):
+        st.markdown("""
+        ### How to Use This App
+        
+        1. **Upload Spectrum Files**
+           - Upload your `.asc` spectrum files on the left
+           - Files should contain wavelength and intensity data
+           - Use the "Clear all" button to reset uploaded files
+        
+        2. **Energy Calibration (Optional)**
+           - Paste your energy calibration data on the right
+           - Supports simple format (QS levels only) or thickness-dependent format
+        
+        3. **Configure Settings**
+           - Adjust header rows to skip in sidebar
+           - Enable/disable OD correction
+           - Toggle error bars and normalization
+        
+        4. **View Results**
+           - Individual spectrum plots with Lorentzian fits
+           - Combined spectra overlay
+           - Threshold analysis dashboard
+           - Peak wavelength vs energy (with vertical error bars)
+           - Peak intensity vs energy (with vertical error bars)
+        
+        5. **Export**
+           - Download CSV, Excel, or HTML plots
+           - Export individual plot images (requires kaleido)
+        
+        ### File Naming Convention
+        
+        The app extracts metadata from filenames:
+        - **QS Level**: `QS180`, `QS_200`, `qs-170`
+        - **Thickness**: `UL3mm`, `5mm`, `thickness_7`
+        - **Concentration**: `5%IL`, `UL10%IL`, `LL15%IL`
+        - **OD Filter**: `OD1`, `OD=2`, `ND0.5`
+        
+        ### Error Bars
+        
+        All plots show **vertical error bars only** (standard convention):
+        - **Wavelength plots**: ±σ_λ (from Lorentzian fit)
+        - **Intensity plots**: ±σ_I (from Lorentzian fit + energy calibration)
+        - **FWHM plots**: ±σ_FWHM (from Lorentzian fit)
+        """)
+    
+    with st.expander("📊 Example Data Format"):
+        st.markdown("""
+        ### ASC File Format
+        ```
+        [Header lines - will be skipped]
+        ...
+        Wavelength    Intensity
+        550.00        1234
+        550.50        1456
+        551.00        1678
+        ...
+        ```
+        
+        ### Energy Calibration Format (Simple)
+        ```
+        200    190    180    170    160
+        0.008  0.025  0.058  0.122  0.245
+        0.007  0.026  0.060  0.120  0.250
+        0.009  0.024  0.055  0.125  0.240
+        ```
+        
+        ### Energy Calibration Format (With Thickness)
+        ```
+        Thickness  200    190    180    170
+        3          0.008  0.025  0.058  0.122
+        5          0.010  0.030  0.070  0.150
+        7          0.012  0.035  0.082  0.178
+        ```
+        """)
+
+st.markdown("---")
+st.markdown("""
+<div style='text-align: center; color: #666;'>
+    <p>🔬 Random Laser Spectrum Analyzer</p>
+    <p>📧 varun.solanki@fau.de | FAU Erlangen-Nürnberg</p>
+    <p><small>Vertical error bars show measurement uncertainty (±σ)</small></p>
+</div>
+""", unsafe_allow_html=True)
+
 
